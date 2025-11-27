@@ -6,10 +6,24 @@ on:
       - main
       - develop
 
+# 동일 PR의 이전 실행 취소 (중복 실행 방지)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
+  # ===========================================
+  # 1단계: 병렬 테스트 (Matrix 전략)
+  # ===========================================
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [threads, userprog, vm, filesys]
+
     permissions:
       contents: read
       pull-requests: write
@@ -18,123 +32,160 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install QEMU and build tools
+      - name: Cache APT packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: qemu-system-x86 gcc g++ make perl python3
+          version: 1.0
+
+      - name: Setup QEMU symlink
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            qemu-system-x86 \
-            gcc \
-            g++ \
-            make \
-            perl \
-            python3
-          
           if [ -f /usr/bin/qemu-system-i386 ]; then
             sudo ln -sf /usr/bin/qemu-system-i386 /usr/bin/qemu
           elif [ -f /usr/bin/qemu-system-x86_64 ]; then
             sudo ln -sf /usr/bin/qemu-system-x86_64 /usr/bin/qemu
           fi
-          
           qemu --version
 
       - name: Activate Pintos environment
-        shell: bash
         run: |
           source ./activate
           echo "$GITHUB_WORKSPACE/utils" >> "$GITHUB_PATH"
 
-      - name: Run Pintos tests with detailed results
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.project }}/build
+          key: build-${{ matrix.project }}-${{ hashFiles(format('{0}/**/*.c', matrix.project), format('{0}/**/*.h', matrix.project)) }}
+          restore-keys: |
+            build-${{ matrix.project }}-
+
+      - name: Build and Test ${{ matrix.project }}
+        id: test
         env:
           PINTOSOPTS: -v
         run: |
           set +e
+          project="${{ matrix.project }}"
           
-          projects=(threads, userprog, vm, filesys)
+          cd "$project"
           
-          echo "## 🧪 Pintos Test Results" > test-summary.md
-          echo "" >> test-summary.md
-          echo "**Commit:** \`${{ github.event.pull_request.head.sha }}\`" >> test-summary.md
-          echo "" >> test-summary.md
-          
-          grand_pass=0
-          grand_total=0
-
-          for project in "${projects[@]}"; do
-            echo "::group::Testing $project"
-            
-            if [ -d "$project" ]; then
-              cd "$project"
-              
-              make clean
-              if ! make; then
-                echo "### ❌ $project - Build Failed" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                cd "$GITHUB_WORKSPACE"
-                echo "::endgroup::"
-                continue
-              fi
-              
-              cd build
-              make check VERBOSE=1 || true
-              
-              result_files=$(find tests -name '*.result' 2>/dev/null | sort)
-              total=$(echo "$result_files" | wc -l | tr -d ' ')
-              
-              if [ "$total" -eq 0 ]; then
-                echo "### ⚠️ $project - No Tests Found" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-              else
-                pass=0
-                fail=0
-                
-                echo "### 📁 $project" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "<details>" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "<summary><b>Test Cases ($total total)</b> - Click to expand</summary>" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                
-                for result_file in $result_files; do
-                  test_name=$(basename "$result_file" .result)
-                  if grep -q "PASS" "$result_file" 2>/dev/null; then
-                    echo "- ✅ \`$test_name\`" >> "$GITHUB_WORKSPACE/test-summary.md"
-                    pass=$((pass + 1))
-                  else
-                    echo "- ❌ \`$test_name\`" >> "$GITHUB_WORKSPACE/test-summary.md"
-                    fail=$((fail + 1))
-                  fi
-                done
-                
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "</details>" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                
-                pass_rate=$(awk "BEGIN {printf \"%.1f%%\", ($pass/$total)*100}")
-                echo "**Summary:** $pass / $total passed ($pass_rate)" >> "$GITHUB_WORKSPACE/test-summary.md"
-                echo "" >> "$GITHUB_WORKSPACE/test-summary.md"
-                
-                grand_pass=$((grand_pass + pass))
-                grand_total=$((grand_total + total))
-              fi
-              
-              cd "$GITHUB_WORKSPACE"
-            fi
-            
-            echo "::endgroup::"
-          done
-
-          if [ "$grand_total" -gt 0 ]; then
-            grand_pass_rate=$(awk "BEGIN {printf \"%.1f%%\", ($grand_pass/$grand_total)*100}")
-            echo "---" >> test-summary.md
-            echo "" >> test-summary.md
-            echo "## 📊 Overall Results" >> test-summary.md
-            echo "" >> test-summary.md
-            echo "**${grand_pass} / ${grand_total}** tests passed (${grand_pass_rate})" >> test-summary.md
+          # 빌드
+          if ! make -j$(nproc); then
+            echo "status=build_failed" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           
-          echo "" >> test-summary.md
-          echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> test-summary.md
+          cd build
+          make check VERBOSE=1 || true
           
-          cat test-summary.md >> "$GITHUB_STEP_SUMMARY"
+          # 결과 집계
+          result_files=$(find tests -name '*.result' 2>/dev/null | sort)
+          total=$(echo "$result_files" | grep -c . || echo 0)
+          
+          if [ "$total" -eq 0 ]; then
+            echo "status=no_tests" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          
+          pass=0
+          fail_list=""
+          
+          for result_file in $result_files; do
+            test_name=$(basename "$result_file" .result)
+            if grep -q "PASS" "$result_file" 2>/dev/null; then
+              pass=$((pass + 1))
+            else
+              fail_list="$fail_list $test_name"
+            fi
+          done
+          
+          echo "status=completed" >> "$GITHUB_OUTPUT"
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "fail_list=$fail_list" >> "$GITHUB_OUTPUT"
+
+      - name: Generate test summary
+        if: always()
+        run: |
+          project="${{ matrix.project }}"
+          status="${{ steps.test.outputs.status }}"
+          
+          mkdir -p results
+          
+          if [ "$status" = "build_failed" ]; then
+            echo "❌ **$project** - Build Failed" > "results/$project.md"
+          elif [ "$status" = "no_tests" ]; then
+            echo "⚠️ **$project** - No Tests Found" > "results/$project.md"
+          else
+            pass="${{ steps.test.outputs.pass }}"
+            total="${{ steps.test.outputs.total }}"
+            pass_rate=$(awk "BEGIN {printf \"%.1f\", ($pass/$total)*100}")
+            
+            if [ "$pass" -eq "$total" ]; then
+              icon="✅"
+            else
+              icon="⚠️"
+            fi
+            
+            echo "$icon **$project**: $pass / $total passed ($pass_rate%)" > "results/$project.md"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.project }}
+          path: results/
+          retention-days: 1
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ matrix.project }}
+          path: |
+            ${{ matrix.project }}/build/tests/**/*.output
+            ${{ matrix.project }}/build/tests/**/*.result
+          retention-days: 7
+
+  # ===========================================
+  # 2단계: 결과 취합 및 PR 코멘트
+  # ===========================================
+  summary:
+    needs: test
+    if: always()
+    runs-on: ubuntu-22.04
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: results/
+
+      - name: Generate PR comment
+        run: |
+          echo "## 🧪 Pintos Test Results" > summary.md
+          echo "" >> summary.md
+          echo "**Commit:** \`${{ github.event.pull_request.head.sha }}\`" >> summary.md
+          echo "" >> summary.md
+          
+          for project in threads userprog vm filesys; do
+            if [ -f "results/$project.md" ]; then
+              cat "results/$project.md" >> summary.md
+              echo "" >> summary.md
+            fi
+          done
+          
+          echo "" >> summary.md
+          echo "---" >> summary.md
+          echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> summary.md
+          
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Find existing comment
         uses: peter-evans/find-comment@v3
@@ -149,16 +200,5 @@ jobs:
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
-          body-path: test-summary.md
+          body-path: summary.md
           edit-mode: replace
-
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pintos-test-results
-          path: |
-            */build/tests/**/*.output
-            */build/tests/**/*.result
-            test-summary.md
-          retention-days: 7
