@@ -1,3 +1,8 @@
+---
+name: "pr_template"
+about: "PintOS PR 작성 템플릿"
+---
+
 ## 🔗 관련 이슈
 <!-- 이슈 번호를 연결해주세요 -->
 closes #이슈번호
