@@ -68,10 +68,15 @@ jobs:
           set +e
           project="${{ matrix.project }}"
           
+          mkdir -p "$GITHUB_WORKSPACE/results"
+          result_md="$GITHUB_WORKSPACE/results/$project.md"
+          
           cd "$project"
           
           # 빌드
           if ! make -j$(nproc); then
+            echo "### ❌ $project - Build Failed" > "$result_md"
+            echo "" >> "$result_md"
             echo "status=build_failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -84,52 +89,45 @@ jobs:
           total=$(echo "$result_files" | grep -c . || echo 0)
           
           if [ "$total" -eq 0 ]; then
+            echo "### ⚠️ $project - No Tests Found" > "$result_md"
+            echo "" >> "$result_md"
             echo "status=no_tests" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           
           pass=0
-          fail_list=""
+          fail=0
+          
+          # 마크다운 생성 시작
+          echo "### 📁 $project" > "$result_md"
+          echo "" >> "$result_md"
+          echo "<details>" >> "$result_md"
+          echo "<summary><b>Test Cases ($total total)</b> - Click to expand</summary>" >> "$result_md"
+          echo "" >> "$result_md"
           
           for result_file in $result_files; do
             test_name=$(basename "$result_file" .result)
             if grep -q "PASS" "$result_file" 2>/dev/null; then
+              echo "- ✅ \`$test_name\`" >> "$result_md"
               pass=$((pass + 1))
             else
-              fail_list="$fail_list $test_name"
+              echo "- ❌ \`$test_name\`" >> "$result_md"
+              fail=$((fail + 1))
             fi
           done
+          
+          echo "" >> "$result_md"
+          echo "</details>" >> "$result_md"
+          echo "" >> "$result_md"
+          
+          # 요약
+          pass_rate=$(awk "BEGIN {printf \"%.1f%%\", ($pass/$total)*100}")
+          echo "**Summary:** $pass / $total passed ($pass_rate)" >> "$result_md"
+          echo "" >> "$result_md"
           
           echo "status=completed" >> "$GITHUB_OUTPUT"
           echo "pass=$pass" >> "$GITHUB_OUTPUT"
           echo "total=$total" >> "$GITHUB_OUTPUT"
-          echo "fail_list=$fail_list" >> "$GITHUB_OUTPUT"
-
-      - name: Generate test summary
-        if: always()
-        run: |
-          project="${{ matrix.project }}"
-          status="${{ steps.test.outputs.status }}"
-          
-          mkdir -p results
-          
-          if [ "$status" = "build_failed" ]; then
-            echo "❌ **$project** - Build Failed" > "results/$project.md"
-          elif [ "$status" = "no_tests" ]; then
-            echo "⚠️ **$project** - No Tests Found" > "results/$project.md"
-          else
-            pass="${{ steps.test.outputs.pass }}"
-            total="${{ steps.test.outputs.total }}"
-            pass_rate=$(awk "BEGIN {printf \"%.1f\", ($pass/$total)*100}")
-            
-            if [ "$pass" -eq "$total" ]; then
-              icon="✅"
-            else
-              icon="⚠️"
-            fi
-            
-            echo "$icon **$project**: $pass / $total passed ($pass_rate%)" > "results/$project.md"
-          fi
 
       - name: Upload results
         if: always()
@@ -181,8 +179,8 @@ jobs:
             fi
           done
           
-          echo "" >> summary.md
           echo "---" >> summary.md
+          echo "" >> summary.md
           echo "_Last updated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')_" >> summary.md
           
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
