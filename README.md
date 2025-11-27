@@ -123,13 +123,13 @@ feat: busy waiting 제거를 위한 sleep_list 구현
     
     ```
     *# ✅ 좋은 예*
-    feat(alarm): sleep_list 자료구조 추가
-    fix(donation): nested donation 깊이 제한 수정
+    feat: sleep_list 자료구조 추가
+    fix: nested donation 깊이 제한 수정
     
     *# ❌ 나쁜 예*
-    feat(alarm): sleep_list 자료구조 추가.     *# 마침표 X*
-    feat(alarm): Added sleep_list              *# 과거형 X*
-    feat(alarm): Sleep_list 자료구조 추가       *# 첫 글자 소문자*
+    feat: sleep_list 자료구조 추가.     *# 마침표 X*
+    feat: Added sleep_list              *# 과거형 X*
+    feat: Sleep_list 자료구조 추가       *# 첫 글자 소문자*
     ```
     
 
@@ -140,7 +140,7 @@ feat: busy waiting 제거를 위한 sleep_list 구현
 - **72자마다 줄바꿈** 권장
     
     ```
-    feat(timer): busy waiting 제거
+    feat: busy waiting 제거
     
     기존 timer_sleep()은 while 루프로 busy waiting하여
     CPU 자원을 낭비했음. sleep_list를 도입하여 스레드를
@@ -160,46 +160,46 @@ feat: busy waiting 제거를 위한 sleep_list 구현
 
 ```bash
 *# Alarm Clock*
-git commit -m "feat(alarm): thread 구조체에 wakeup_tick 필드 추가"
-git commit -m "feat(alarm): sleep_list 자료구조 구현"
-git commit -m "feat(timer): timer_sleep()에서 busy waiting 제거"
+git commit -m "feat: thread 구조체에 wakeup_tick 필드 추가"
+git commit -m "feat: sleep_list 자료구조 구현"
+git commit -m "feat: timer_sleep()에서 busy waiting 제거"
 
 *# Priority Scheduling*
-git commit -m "feat(priority): ready_list 우선순위 정렬 구현"
-git commit -m "feat(sync): sema_up()에서 우선순위 기반 스레드 선택"
+git commit -m "feat: ready_list 우선순위 정렬 구현"
+git commit -m "feat: sema_up()에서 우선순위 기반 스레드 선택"
 
 *# Priority Donation*
-git commit -m "feat(donation): lock 획득 시 priority donation 구현"
-git commit -m "feat(donation): nested donation 지원"
-git commit -m "feat(donation): multiple donation 지원"
+git commit -m "feat: lock 획득 시 priority donation 구현"
+git commit -m "feat: nested donation 지원"
+git commit -m "feat: multiple donation 지원"
 ```
 
 ### 버그 수정
 
 ```bash
-git commit -m "fix(alarm): alarm-negative 테스트 음수 tick 처리"
-git commit -m "fix(donation): priority-donate-chain 무한루프 수정"
-git commit -m "fix(mlfqs): fixed-point 연산 오버플로우 수정"
+git commit -m "fix: alarm-negative 테스트 음수 tick 처리"
+git commit -m "fix: priority-donate-chain 무한루프 수정"
+git commit -m "fix: fixed-point 연산 오버플로우 수정"
 ```
 
 ### 리팩토링
 
 ```bash
-git commit -m "refactor(thread): thread_yield() 로직 단순화"
-git commit -m "refactor(sync): lock 관련 함수 분리"
+git commit -m "refactor: thread_yield() 로직 단순화"
+git commit -m "refactor: lock 관련 함수 분리"
 ```
 
 ### 문서
 
 ```bash
 git commit -m "docs: README에 팀 정보 추가"
-git commit -m "docs(alarm): 구현 방법 주석 추가"
+git commit -m "docs: 구현 방법 주석 추가"
 ```
 
 ### 기타
 
 ```bash
 git commit -m "chore: .gitignore에 build 폴더 추가"
-git commit -m "style(thread): 코드 포맷팅 통일"
+git commit -m "style: 코드 포맷팅 통일"
 git commit -m "test: alarm 관련 디버그 출력 추가"
 ```
