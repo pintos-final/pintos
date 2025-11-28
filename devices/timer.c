@@ -31,16 +31,13 @@ static intr_handler_func timer_interrupt;
 static bool too_many_loops(unsigned loops);
 static void busy_wait(int64_t loops);
 static void real_time_sleep(int64_t num, int32_t denom);
+
 static bool wakeup_less(const struct list_elem* a, const struct list_elem* b, void* aux)
 {
-    struct thread* a_thread = list_entry(a, struct thread, elem);
-    struct thread* b_thread = list_entry(b, struct thread, elem);
+    struct thread* a_thread = list_entry(a, struct thread, sleep_elem);
+    struct thread* b_thread = list_entry(b, struct thread, sleep_elem);
 
-    if (a_thread->wakeup_tick < b_thread->wakeup_tick) {
-        return true;
-    } else {
-        return false;
-    }
+    return a_thread->wakeup_tick < b_thread->wakeup_tick;
 }
 
 /* Sets up the 8254 Programmable Interval Timer (PIT) to
@@ -121,7 +118,7 @@ void timer_sleep(int64_t ticks)
     thread_current()->wakeup_tick = start + ticks;
 
     // sleep_list에 넣은 후 쓰레드 블락
-    list_insert_ordered(&sleep_list, &thread_current()->elem, wakeup_less, NULL);
+    list_insert_ordered(&sleep_list, &thread_current()->sleep_elem, wakeup_less, NULL);
     thread_block();
     intr_set_level(old_level);
 }
@@ -157,9 +154,11 @@ static void timer_interrupt(struct intr_frame* args UNUSED)
 
     // interrupt가 발생할 때 마다 sleep_list에서 깨울 항목 체크해 깨움(unblock)
     int64_t now = timer_ticks();
-    while (!list_empty(&sleep_list) && list_entry(list_begin(&sleep_list), struct thread, elem)->wakeup_tick <= now) {
-        struct thread* t = list_entry(list_begin(&sleep_list), struct thread, elem);
-        list_pop_front(&sleep_list);
+
+    struct thread* t;
+    while (!list_empty(&sleep_list) &&
+           (t = list_entry(list_begin(&sleep_list), struct thread, sleep_elem))->wakeup_tick <= now) {
+        list_remove(&t->sleep_elem);
         thread_unblock(t);
     }
     thread_tick();
