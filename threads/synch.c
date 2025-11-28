@@ -68,7 +68,7 @@ void sema_down(struct semaphore* sema)
 
     old_level = intr_disable();
     while (sema->value == 0) {
-        list_insert_ordered(&sema->waiters, &thread_current()->elem, cmp_priority, NULL);
+        list_push_back(&sema->waiters, &thread_current()->elem);
         thread_block();
     }
     sema->value--;
@@ -111,8 +111,10 @@ void sema_up(struct semaphore* sema)
 
     old_level = intr_disable();
     if (!list_empty(&sema->waiters)) {
-        struct list_elem* e = list_pop_front(&sema->waiters);
-        unblocked = list_entry(e, struct thread, elem);
+        /* cmp_priority는 내림차순(>)이므로 list_min이 최고 우선순위 반환 */
+        struct list_elem* max_elem = list_min(&sema->waiters, cmp_priority, NULL);
+        list_remove(max_elem);
+        unblocked = list_entry(max_elem, struct thread, elem);
         thread_unblock(unblocked);
     }
     sema->value++;
