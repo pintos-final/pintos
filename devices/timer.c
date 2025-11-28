@@ -209,9 +209,16 @@ static void real_time_sleep(int64_t num, int32_t denom)
     }
 }
 
+/* 알람 대기 리스트에서 두 스레드의 순서를 비교
+   1순위: 깨어날 시간(wakeup_tick)이 빠른 스레드가 먼저
+   2순위: wakeup_tick이 같으면 priority(우선순위)가 높은 스레드가 먼저 */
 static bool wakeup_tick_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
 {
     struct thread* ta = list_entry(a, struct thread, sleep_elem);
     struct thread* tb = list_entry(b, struct thread, sleep_elem);
-    return ta->wakeup_tick < tb->wakeup_tick;
+
+    if (ta->wakeup_tick != tb->wakeup_tick)
+        return ta->wakeup_tick < tb->wakeup_tick;
+
+    return ta->priority > tb->priority;
 }
