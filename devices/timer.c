@@ -113,22 +113,14 @@ void timer_sleep(int64_t ticks)
     // sleep()이 호출 되었을 때의 시간 저장
     int64_t start = timer_ticks();
     /*
-        기존 : 호출되었을때 부터 몇초 지났는지 검사해
-                ticks보다 작으면 다시 양보
-        문제점 : 스케줄러에 의해 실행 된 후 시간계산 연산 후 다시 양보
+        기존 : sleep()이 호출 되었을때 부터 몇초 지났는지 검사해 ticks보다 작으면 다시 양보
+        문제점 : sleep 이지만 스케줄러에 의해 실행 된 후 시간계산 연산 후 다시 양보
         해결 : sleep()이 호출 되면 쓰레드를 블락해 스케줄러가 선택하지 않도록 해야함
-        1. timer_sleep()이 호출 되면 sleep_list에 넣은 후 쓰레드 블락
-            - sleep_list는 '깨어날 시간 순' 정렬
-                -> sleep_list에 넣을 때 마다 'list_insert_ordered' 사용해 넣기
-        2. timer_tick()이 발생할 때 마다 깨어날 애가 있는지 sleep_list 검사
-            - list의 앞부분 부터 '깨어나야하는 애인지' 순차적으로 검사
-
-        void list_insert_ordered (struct list *, struct list_elem *,
-                    list_less_func *, void *aux);
     */
-    // timer_sleep()이 호출 되면 sleep_list에 넣은 후 쓰레드 블락
+    // 자야할 시간 계산해 저장
     thread_current()->wakeup_tick = start + ticks;
 
+    // sleep_list에 넣은 후 쓰레드 블락
     list_insert_ordered(&sleep_list, &thread_current()->elem, wakeup_less, NULL);
     thread_block();
     intr_set_level(old_level);
@@ -162,9 +154,8 @@ void timer_print_stats(void)
 static void timer_interrupt(struct intr_frame* args UNUSED)
 {
     ticks++;
-    /*
-        interrupt가 발생할 때 마다 sleep_list에서 깨울 항목 체크해 깨움(unblock)
-    */
+
+    // interrupt가 발생할 때 마다 sleep_list에서 깨울 항목 체크해 깨움(unblock)
     int64_t now = timer_ticks();
     while (!list_empty(&sleep_list) && list_entry(list_begin(&sleep_list), struct thread, elem)->wakeup_tick <= now) {
         struct thread* t = list_entry(list_begin(&sleep_list), struct thread, elem);
