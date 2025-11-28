@@ -32,6 +32,8 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static bool cmp_cond_waiter_priority(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -306,8 +308,10 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED)
     ASSERT(!intr_context());
     ASSERT(lock_held_by_current_thread(lock));
 
-    if (!list_empty(&cond->waiters))
+    if (!list_empty(&cond->waiters)) {
+        list_sort(&cond->waiters, cmp_cond_waiter_priority, NULL);
         sema_up(&list_entry(list_pop_front(&cond->waiters), struct semaphore_elem, elem)->semaphore);
+    }
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -323,4 +327,22 @@ void cond_broadcast(struct condition* cond, struct lock* lock)
 
     while (!list_empty(&cond->waiters))
         cond_signal(cond, lock);
+}
+
+/* 조건 변수(Conditional variable) 대기자의 우선순위(priority) 비교 함수 */
+static bool cmp_cond_waiter_priority(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
+{
+    struct semaphore_elem* sa = list_entry(a, struct semaphore_elem, elem);
+    struct semaphore_elem* sb = list_entry(b, struct semaphore_elem, elem);
+
+    // 각 세마포어의 waiters에서 맨 앞(최고 우선순위) 스레드 비교
+    // sema_down/up에서 각 세마포어의 waiters는 항상 정렬된 상태 유지
+    struct list_elem* ea = list_begin(&sa->semaphore.waiters);
+    struct list_elem* eb = list_begin(&sb->semaphore.waiters);
+
+    struct thread* ta = list_entry(ea, struct thread, elem);
+    struct thread* tb = list_entry(eb, struct thread, elem);
+
+    // true면 a가 b보다 앞에 위치 (우선순위 내림차순 정렬)
+    return ta->priority > tb->priority;
 }
