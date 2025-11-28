@@ -109,6 +109,7 @@ void timer_sleep(int64_t ticks)
 {
     ASSERT(intr_get_level() == INTR_ON);
 
+    enum intr_level old_level = intr_disable();
     // sleep()이 호출 되었을 때의 시간 저장
     int64_t start = timer_ticks();
     /*
@@ -128,9 +129,9 @@ void timer_sleep(int64_t ticks)
     // timer_sleep()이 호출 되면 sleep_list에 넣은 후 쓰레드 블락
     thread_current()->wakeup_tick = start + ticks;
 
-    struct list_elem* elem;
-    list_insert_ordered(&sleep_list, elem, wakeup_less, NULL);
+    list_insert_ordered(&sleep_list, &thread_current()->elem, wakeup_less, NULL);
     thread_block();
+    intr_set_level(old_level);
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -161,6 +162,15 @@ void timer_print_stats(void)
 static void timer_interrupt(struct intr_frame* args UNUSED)
 {
     ticks++;
+    /*
+        interrupt가 발생할 때 마다 sleep_list에서 깨울 항목 체크해 깨움(unblock)
+    */
+    int64_t now = timer_ticks();
+    while (!list_empty(&sleep_list) && list_entry(list_begin(&sleep_list), struct thread, elem)->wakeup_tick <= now) {
+        struct thread* t = list_entry(list_begin(&sleep_list), struct thread, elem);
+        list_pop_front(&sleep_list);
+        thread_unblock(t);
+    }
     thread_tick();
 }
 
