@@ -201,6 +201,11 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
     /* Add to run queue. */
     thread_unblock(t);
 
+    // unblock 후 스케줄링 필요
+    // 생성된 쓰레드의 우선순위가 '대기리스트에서 제일 높은 우선순위보다 높을 경우' 바로 스케줄링
+    if (t->priority > thread_current()->priority) {
+        thread_yield();
+    }
     return tid;
 }
 
@@ -234,7 +239,9 @@ void thread_unblock(struct thread* t)
 
     old_level = intr_disable();
     ASSERT(t->status == THREAD_BLOCKED);
-    list_push_back(&ready_list, &t->elem);
+
+    // readyList에 넣을 때 우선순위 고려해서 넣어야함
+    list_insert_ordered(&ready_list, &t->elem, priority_greater, NULL);
     t->status = THREAD_READY;
     intr_set_level(old_level);
 }
@@ -287,7 +294,7 @@ void thread_exit(void)
 }
 
 /* Yields the CPU.  The current thread is not put to sleep and
-   may be scheduled again immediately at the scheduler's whim. */
+may be scheduled again immediately at the scheduler's whim. */
 void thread_yield(void)
 {
     struct thread* curr = thread_current();
@@ -296,8 +303,10 @@ void thread_yield(void)
     ASSERT(!intr_context());
 
     old_level = intr_disable();
-    if (curr != idle_thread)
-        list_push_back(&ready_list, &curr->elem);
+    if (curr != idle_thread) {
+        // 우선순위 고려해서 리스트 넣어야함
+        list_insert_ordered(&ready_list, &curr->elem, priority_greater, NULL);
+    }
     do_schedule(THREAD_READY);
     intr_set_level(old_level);
 }
@@ -306,6 +315,12 @@ void thread_yield(void)
 void thread_set_priority(int new_priority)
 {
     thread_current()->priority = new_priority;
+
+    // 우선순위 세팅 후 재스케줄링
+    struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
+    if (new_priority < target->priority) {
+        thread_yield();
+    }
 }
 
 /* Returns the current thread's priority. */
@@ -342,14 +357,13 @@ int thread_get_recent_cpu(void)
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
-
-   The idle thread is initially put on the ready list by
-   thread_start().  It will be scheduled once initially, at which
-   point it initializes idle_thread, "up"s the semaphore passed
-   to it to enable thread_start() to continue, and immediately
-   blocks.  After that, the idle thread never appears in the
-   ready list.  It is returned by next_thread_to_run() as a
-   special case when the ready list is empty. */
+The idle thread is initially put on the ready list by
+thread_start().  It will be scheduled once initially, at which
+point it initializes idle_thread, "up"s the semaphore passed
+to it to enable thread_start() to continue, and immediately
+blocks.  After that, the idle thread never appears in the
+ready list.  It is returned by next_thread_to_run() as a
+special case when the ready list is empty. */
 static void idle(void* idle_started_ UNUSED)
 {
     struct semaphore* idle_started = idle_started_;
@@ -447,7 +461,7 @@ void do_iret(struct intr_frame* tf)
 }
 
 /* Switching the thread by activating the new thread's page
-   tables, and, if the previous thread is dying, destroying it.
+tables, and, if the previous thread is dying, destroying it.
 
    At this function's invocation, we just switched from thread
    PREV, the new thread is already running, and interrupts are
@@ -581,4 +595,11 @@ static tid_t allocate_tid(void)
     lock_release(&tid_lock);
 
     return tid;
+}
+
+bool priority_greater(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
+{
+    struct thread* ta = list_entry(a, struct thread, elem);
+    struct thread* tb = list_entry(b, struct thread, elem);
+    return ta->priority > tb->priority;
 }
