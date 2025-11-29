@@ -203,7 +203,7 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
 
     // unblock 후 스케줄링 필요
     // 생성된 쓰레드의 우선순위가 '대기리스트에서 제일 높은 우선순위보다 높을 경우' 바로 스케줄링
-    if (t->priority > thread_current()->priority) {
+    if (t->donation_priority > thread_current()->donation_priority) {
         thread_yield();
     }
     return tid;
@@ -316,17 +316,24 @@ void thread_set_priority(int new_priority)
 {
     thread_current()->priority = new_priority;
 
+    // 기부받은 상태가 아니라면 donation_priority도 new_priority로 세팅
+    if (list_empty(&thread_current()->lock_holding)) {
+        thread_current()->donation_priority = new_priority;
+    }
+
     // 우선순위 세팅 후 재스케줄링
-    struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
-    if (new_priority < target->priority) {
-        thread_yield();
+    if (!list_empty(&ready_list)) {
+        struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
+        if (new_priority < target->donation_priority) {
+            thread_yield();
+        }
     }
 }
 
 /* Returns the current thread's priority. */
 int thread_get_priority(void)
 {
-    return thread_current()->priority;
+    return thread_current()->donation_priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -415,6 +422,9 @@ static void init_thread(struct thread* t, const char* name, int priority)
     strlcpy(t->name, name, sizeof t->name);
     t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void*);
     t->priority = priority;
+    /* donation_priority 세팅 */
+    t->donation_priority = priority;
+    list_init(&t->lock_holding);
     t->magic = THREAD_MAGIC;
 }
 
@@ -425,10 +435,12 @@ static void init_thread(struct thread* t, const char* name, int priority)
    idle_thread. */
 static struct thread* next_thread_to_run(void)
 {
-    if (list_empty(&ready_list))
+    if (list_empty(&ready_list)) {
         return idle_thread;
-    else
+    } else {
+        list_sort(&ready_list, priority_greater, NULL);
         return list_entry(list_pop_front(&ready_list), struct thread, elem);
+    }
 }
 
 /* Use iretq to launch the thread */
@@ -601,5 +613,5 @@ bool priority_greater(const struct list_elem* a, const struct list_elem* b, void
 {
     struct thread* ta = list_entry(a, struct thread, elem);
     struct thread* tb = list_entry(b, struct thread, elem);
-    return ta->priority > tb->priority;
+    return ta->donation_priority > tb->donation_priority;
 }

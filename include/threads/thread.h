@@ -97,6 +97,10 @@ struct thread {
     int64_t wakeup_tick;         /* Thread가 일어나야 할 tick */
     struct list_elem sleep_elem; /* block상태의 Thread 리스트 요소 */
 
+    int donation_priority;     /* priority on donation */
+    struct list lock_holding;  /* 잡고있는 락 목록 */
+    struct lock* lock_waiting; /* 대기하고 있는 락 */
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint64_t* pml4; /* Page map level 4 */
