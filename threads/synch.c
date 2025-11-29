@@ -119,10 +119,15 @@ void sema_up(struct semaphore* sema)
     sema->value++;
     intr_set_level(old_level);
 
-    if (wakeup_thread != NULL && !intr_context() && old_level == INTR_ON) {
-        if (thread_current()->priority < wakeup_thread->priority) {
-            thread_yield();
-        }
+    /*
+        intr_context() : 인터럽트 핸들러에서 호출되었는지 검사
+        old_level == INTR_ON : 원자성이 보장되어야 하는 문맥에서 호출되었는지 검사
+    */
+    if (wakeup_thread == NULL || intr_context() || old_level != INTR_ON) {
+        return;
+    }
+    if (thread_current()->priority < wakeup_thread->priority) {
+        thread_yield();
     }
 }
 
