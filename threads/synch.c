@@ -276,6 +276,7 @@ void retrieve_priority(struct lock* lock_holding)
 
     current_thread->donation_priority = current_thread->priority;
 
+    /* 쥐고있는 락 목록 순회하며, 그 중 가장 높은 우선순위 기부받는 로직 */
     if (!list_empty(holding)) {
         struct list_elem* e;
         for (e = list_begin(holding); e != list_end(holding); e = list_next(e)) {
@@ -283,6 +284,7 @@ void retrieve_priority(struct lock* lock_holding)
 
             struct list* waiter = &holding_lock->semaphore.waiters;
 
+            // 잡고있는 락의 대기자 목록을 정렬 후, 거기서 가장 높은 우선순위를 가져온다
             if (!list_empty(waiter)) {
                 list_sort(waiter, priority_greater, NULL);
                 struct thread* highest_priority_thread = list_entry(list_begin(waiter), struct thread, elem);
