@@ -314,13 +314,19 @@ void thread_yield(void)
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority)
 {
-    thread_current()->priority = new_priority;
+    enum intr_level old = intr_disable();
+    struct thread* curr = thread_current();
+    curr->original_priority = new_priority; // 원본 우선순위 갱신
+    refresh_priority();                     // donation 고려해 유효 우선순위 재계산
+    intr_set_level(old);
+
+    if (list_empty(&ready_list))
+        return;
 
     // 우선순위 세팅 후 재스케줄링
-    struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
-    if (new_priority < target->priority) {
+    struct thread* front = list_entry(list_begin(&ready_list), struct thread, elem);
+    if (front->priority > curr->priority)
         thread_yield();
-    }
 }
 
 /* Returns the current thread's priority. */
@@ -416,6 +422,8 @@ static void init_thread(struct thread* t, const char* name, int priority)
     t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void*);
     t->priority = priority;
     t->magic = THREAD_MAGIC;
+    t->original_priority = priority;
+    list_init(&t->donations);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
