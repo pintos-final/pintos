@@ -314,9 +314,11 @@ void thread_yield(void)
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority)
 {
+    enum intr_level old = intr_disable();
     struct thread* curr = thread_current();
     curr->original_priority = new_priority; // 원본 우선순위 갱신
     refresh_priority();                     // donation 고려해 유효 우선순위 재계산
+    intr_set_level(old);
 
     if (list_empty(&ready_list))
         return;
