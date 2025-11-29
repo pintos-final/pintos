@@ -311,8 +311,10 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED)
     ASSERT(lock_held_by_current_thread(lock));
 
     if (!list_empty(&cond->waiters)) {
-        list_sort(&cond->waiters, cmp_cond_waiter_priority, NULL);
-        sema_up(&list_entry(list_pop_front(&cond->waiters), struct semaphore_elem, elem)->semaphore);
+        /* cmp_cond_waiter_priority는 내림차순(>)이므로 list_min이 최고 우선순위 반환 */
+        struct list_elem* max_elem = list_min(&cond->waiters, cmp_cond_waiter_priority, NULL);
+        list_remove(max_elem);
+        sema_up(&list_entry(max_elem, struct semaphore_elem, elem)->semaphore);
     }
 }
 
