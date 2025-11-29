@@ -182,13 +182,13 @@ static void donate_priority(struct thread* target_thread)
         2. 대기하고있는 락이 있다면, 그 락을 쥐고있는 쓰레드가 있는가?
         3. 대기하고있는 락이 있다면, 그 락을 쥐고있는 쓰레드가 러닝중인 쓰레드인가?
     */
-    if (target_waiting_lock != NULL && target_waiting_lock->holder != NULL &&
-        target_waiting_lock->holder != current_thread) {
-
-        // 대기하고 있는 락을 쥐고있는 쓰레드의 우선순위가 더 낮다면, 기부
-        if (target_thread->donation_priority > target_waiting_lock->holder->donation_priority) {
-            donate_priority(target_waiting_lock->holder);
-        }
+    if (target_waiting_lock == NULL || target_waiting_lock->holder == NULL ||
+        target_waiting_lock->holder == current_thread) {
+        return;
+    }
+    // 대기하고 있는 락을 쥐고있는 쓰레드의 우선순위가 더 낮다면, 기부
+    if (target_thread->donation_priority > target_waiting_lock->holder->donation_priority) {
+        donate_priority(target_waiting_lock->holder);
     }
 }
 
@@ -277,20 +277,23 @@ void retrieve_priority(struct lock* lock_holding)
     current_thread->donation_priority = current_thread->priority;
 
     /* 쥐고있는 락 목록 순회하며, 그 중 가장 높은 우선순위 기부받는 로직 */
-    if (!list_empty(holding)) {
-        struct list_elem* e;
-        for (e = list_begin(holding); e != list_end(holding); e = list_next(e)) {
-            struct lock* holding_lock = list_entry(e, struct lock, elem);
+    // -> if문 중첩 피하기. early retun 패턴
+    if (list_empty(holding)) {
+        return;
+    }
 
-            struct list* waiter = &holding_lock->semaphore.waiters;
+    struct list_elem* e;
+    for (e = list_begin(holding); e != list_end(holding); e = list_next(e)) {
+        struct lock* holding_lock = list_entry(e, struct lock, elem);
 
-            // 잡고있는 락의 대기자 목록을 정렬 후, 거기서 가장 높은 우선순위를 가져온다
-            if (!list_empty(waiter)) {
-                list_sort(waiter, priority_greater, NULL);
-                struct thread* highest_priority_thread = list_entry(list_begin(waiter), struct thread, elem);
-                if (highest_priority_thread->donation_priority > current_thread->donation_priority) {
-                    current_thread->donation_priority = highest_priority_thread->donation_priority;
-                }
+        struct list* waiter = &holding_lock->semaphore.waiters;
+
+        // 잡고있는 락의 대기자 목록을 정렬 후, 거기서 가장 높은 우선순위를 가져온다
+        if (!list_empty(waiter)) {
+            struct thread* highest_priority_thread =
+                list_entry(list_min(waiter, priority_greater, NULL), struct thread, elem);
+            if (highest_priority_thread->donation_priority > current_thread->donation_priority) {
+                current_thread->donation_priority = highest_priority_thread->donation_priority;
             }
         }
     }

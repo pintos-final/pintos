@@ -322,11 +322,12 @@ void thread_set_priority(int new_priority)
     }
 
     // 우선순위 세팅 후 재스케줄링
-    if (!list_empty(&ready_list)) {
-        struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
-        if (new_priority < target->donation_priority) {
-            thread_yield();
-        }
+    if (list_empty(&ready_list)) {
+        return;
+    }
+    struct thread* target = list_entry(list_begin(&ready_list), struct thread, elem);
+    if (new_priority < target->donation_priority) {
+        thread_yield();
     }
 }
 
