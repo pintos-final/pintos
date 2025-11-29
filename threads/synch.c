@@ -32,7 +32,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static void remove_with_lock(struct lock* lock);
+static void donate_priority(struct thread* donor, int depth);
 static bool cond_priority_greater(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
+bool donation_priority_greater(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -200,7 +203,17 @@ void lock_acquire(struct lock* lock)
     ASSERT(!intr_context());
     ASSERT(!lock_held_by_current_thread(lock));
 
+    struct thread* curr = thread_current();
+    if (lock->holder != NULL) {
+        enum intr_level old = intr_disable();
+        curr->wait_on_lock = lock;
+        list_push_back(&lock->holder->donations, &curr->donation_elem);
+        donate_priority(curr, 0);
+        intr_set_level(old);
+    }
+
     sema_down(&lock->semaphore);
+    curr->wait_on_lock = NULL;
     lock->holder = thread_current();
 }
 
@@ -234,6 +247,8 @@ void lock_release(struct lock* lock)
     ASSERT(lock != NULL);
     ASSERT(lock_held_by_current_thread(lock));
 
+    remove_with_lock(lock);
+    refresh_priority();
     lock->holder = NULL;
     sema_up(&lock->semaphore);
 }
@@ -246,6 +261,57 @@ bool lock_held_by_current_thread(const struct lock* lock)
     ASSERT(lock != NULL);
 
     return lock->holder == thread_current();
+}
+
+/* 우선순위 기부 함수 (재귀적으로 기부 처리) */
+static void donate_priority(struct thread* donor, int depth)
+{
+    if (depth > 8)
+        return;
+
+    struct lock* lock = donor->wait_on_lock;
+    if (lock && lock->holder) {
+        struct thread* holder = lock->holder;
+        if (holder->priority < donor->priority) {
+            holder->priority = donor->priority;
+            donate_priority(holder, depth + 1);
+        }
+    }
+}
+
+/* 현재 스레드의 우선순위를 갱신하는 함수 */
+void refresh_priority(void)
+{
+    struct thread* curr = thread_current();
+    curr->priority = curr->original_priority;
+
+    if (list_empty(&curr->donations))
+        return;
+
+    /* donations 리스트에 있는 스레드들 중 가장 높은 우선순위를 찾고
+       가장 높은 우선순위를 현재 스레드의 우선순위로 변경 */
+    struct list_elem* max_elem = list_min(&curr->donations, donation_priority_greater, NULL);
+    struct thread* max_donor = list_entry(max_elem, struct thread, donation_elem);
+    if (max_donor->priority > curr->priority)
+        curr->priority = max_donor->priority;
+}
+
+/* 특정 락과 관련된 우선순위 기부를 제거하는 함수 */
+static void remove_with_lock(struct lock* lock)
+{
+    struct thread* curr = thread_current();
+    struct list_elem* e = list_begin(&curr->donations);
+
+    // donations 리스트를 순회하며 해당 락 관련 기부 제거
+    while (e != list_end(&curr->donations)) {
+        struct thread* t = list_entry(e, struct thread, donation_elem);
+        if (t->wait_on_lock == lock) {
+            // 해당 elem을 리스트에서 제거, 반환값은 다음 요소
+            e = list_remove(e);
+        } else {
+            e = list_next(e);
+        }
+    }
 }
 
 /* One semaphore in a list. */
@@ -349,4 +415,11 @@ static bool cond_priority_greater(const struct list_elem* a, const struct list_e
     struct thread* b_thread = list_entry(list_begin(&b_sema->semaphore.waiters), struct thread, elem);
 
     return a_thread->priority > b_thread->priority;
+}
+
+bool donation_priority_greater(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
+{
+    struct thread* ta = list_entry(a, struct thread, donation_elem);
+    struct thread* tb = list_entry(b, struct thread, donation_elem);
+    return ta->priority > tb->priority;
 }
