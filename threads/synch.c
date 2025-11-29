@@ -68,7 +68,6 @@ void sema_down(struct semaphore* sema)
 
     old_level = intr_disable();
     while (sema->value == 0) {
-        // list_insert_ordered(&sema->waiters, &thread_current()->elem, priority_greater, NULL);
         list_push_back(&sema->waiters, &thread_current()->elem);
         thread_block();
     }
@@ -315,7 +314,7 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED)
     ASSERT(!intr_context());
     ASSERT(lock_held_by_current_thread(lock));
 
-    // 정렬 후 풀기
+    // 우선순위 가장 큰 원소 대기열에서 제거 후 sema_up
     if (!list_empty(&cond->waiters)) {
         struct list_elem* max_elem = list_min(&cond->waiters, cond_priority_greater, NULL);
         list_remove(max_elem);
