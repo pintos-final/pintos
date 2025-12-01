@@ -326,6 +326,44 @@ static bool load(const char* file_name, struct intr_frame* if_)
     bool success = false;
     int i;
 
+    /* file_name 문자열을 공백 기준으로 잘라 argv/argc를 구성 */
+    char* fn_copy = NULL;
+    int argc = 0;
+    char** argv = NULL;
+
+    /* fn_copy용 별도의 4KB 페이지 할당 */
+    size_t file_name_len = strlen(file_name) + 1;
+    fn_copy = palloc_get_page(PAL_ZERO);
+    if (fn_copy == NULL)
+        goto done;
+
+    /* argv용 별도의 4KB 페이지 할당 */
+    argv = palloc_get_page(PAL_ZERO);
+    if (argv == NULL)
+        goto done;
+
+    /* 길이 검증 후 복사 */
+    if (file_name_len > PGSIZE)
+        goto done;
+    strlcpy(fn_copy, file_name, PGSIZE);
+
+    char* token;
+    char* save_ptr;
+    int max_argc = PGSIZE / sizeof(char*); // 최대 인자 개수
+
+    token = strtok_r(fn_copy, " ", &save_ptr);
+    if (token == NULL)
+        goto done;
+
+    while (token != NULL && argc < max_argc) {
+        argv[argc++] = token;
+        token = strtok_r(NULL, " ", &save_ptr);
+    }
+
+    /* 실행 파일 이름조차 없는 경우, 로딩을 시도하지 않고 바로 실패 처리 */
+    if (argc == 0)
+        goto done;
+
     /* Allocate and activate page directory. */
     t->pml4 = pml4_create();
     if (t->pml4 == NULL)
@@ -333,7 +371,7 @@ static bool load(const char* file_name, struct intr_frame* if_)
     process_activate(thread_current());
 
     /* Open executable file. */
-    file = filesys_open(file_name);
+    file = filesys_open(argv[0]);
     if (file == NULL) {
         printf("load: %s: open failed\n", file_name);
         goto done;
@@ -404,13 +442,45 @@ static bool load(const char* file_name, struct intr_frame* if_)
     /* Start address. */
     if_->rip = ehdr.e_entry;
 
-    /* TODO: Your code goes here.
-     * TODO: Implement argument passing (see project2/argument_passing.html). */
+    /* 각 인자 문자열을 역순으로 스택에 복사하여,
+       이후 argv가 아래에서 위로 차례대로 인자를 가리키도록 만듬 */
+    for (i = argc - 1; i >= 0; i--) {
+        int str_len = strlen(argv[i]) + 1;
+        if_->rsp -= str_len;
+        memcpy((void*)if_->rsp, argv[i], str_len);
+        argv[i] = (char*)if_->rsp;
+    }
+
+    /* x86-64 호출 규약을 맞추기 위해 스택 포인터를 8의 배수로 정렬 */
+    if_->rsp &= ~0x7;
+
+    /* argv 포인터 배열과 마지막 NULL terminator를 스택에 저장
+       i == argc일 때는 NULL 슬롯을 위해 공간만 확보하고 값은 채우지 않음 */
+    for (i = argc; i >= 0; --i) {
+        if_->rsp -= sizeof(uint64_t);
+        if (i == argc) {
+            *(uint64_t*)if_->rsp = 0; // 명시적으로 NULL 저장
+            continue;
+        }
+        memcpy((void*)if_->rsp, &argv[i], sizeof(uint64_t));
+    }
+
+    /* x86-64 SysV ABI에 따라 사용자 프로그램 진입 시 인자를 설정 */
+    if_->rsp -= sizeof(uint64_t); // 호출 규약을 맞추기 위한 가짜 리턴 주소(fake return address) 자리 확보
+    if_->R.rdi = argc;            // 첫 번째 인자: argc
+    if_->R.rsi = if_->rsp + 8;    // 두 번째 인자: argv
 
     success = true;
 
 done:
     /* We arrive here whether the load is successful or not. */
+
+    /* 동적할당 한 메모리 정리 */
+    if (fn_copy != NULL)
+        palloc_free_page(fn_copy);
+    if (argv != NULL)
+        palloc_free_page(argv);
+
     file_close(file);
     return success;
 }
