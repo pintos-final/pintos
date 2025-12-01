@@ -342,7 +342,14 @@ static bool load(const char* file_name, struct intr_frame* if_)
     char** arg_v = malloc(sizeof(char*) * (LOADER_ARGS_LEN + 1));
     char* save_ptr;
 
-    arg_v[arg_c] = strtok_r(file_name, " ", &save_ptr);
+    // 인자로 들어온 file_name 복사해서 사용 -> 원본 손상 x
+    char* copy_file_name = palloc_get_page(PAL_ZERO);
+    if (copy_file_name == NULL) {
+        goto done;
+    }
+    strlcpy(copy_file_name, file_name, PGSIZE);
+
+    arg_v[arg_c] = strtok_r(copy_file_name, " ", &save_ptr);
 
     while (arg_v[arg_c] != NULL && arg_c < LOADER_ARGS_LEN) {
         arg_c++;
@@ -350,16 +357,15 @@ static bool load(const char* file_name, struct intr_frame* if_)
     }
 
     // 파일명 설정
-    file_name = arg_v[0];
-    if (file_name == NULL) {
-        printf("load: no file name\n");
+    copy_file_name = arg_v[0];
+    if (copy_file_name == NULL) {
         goto done;
     }
 
     /* Open executable file. */
-    file = filesys_open(file_name);
+    file = filesys_open(copy_file_name);
     if (file == NULL) {
-        printf("load: %s: open failed\n", file_name);
+        printf("load: %s: open failed\n", copy_file_name);
         goto done;
     }
 
@@ -367,7 +373,7 @@ static bool load(const char* file_name, struct intr_frame* if_)
     if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr || memcmp(ehdr.e_ident, "\177ELF\2\1\1", 7) ||
         ehdr.e_type != 2 || ehdr.e_machine != 0x3E // amd64
         || ehdr.e_version != 1 || ehdr.e_phentsize != sizeof(struct Phdr) || ehdr.e_phnum > 1024) {
-        printf("load: %s: error loading executable\n", file_name);
+        printf("load: %s: error loading executable\n", copy_file_name);
         goto done;
     }
 
@@ -429,9 +435,6 @@ static bool load(const char* file_name, struct intr_frame* if_)
     if_->rip = ehdr.e_entry;
 
     // 1. argv를 유저스택에 쌓는다
-    char* argvP[LOADER_ARGS_LEN + 1];
-
-    argvP[arg_c] = NULL;
     uint8_t* sp = (uint8_t*)if_->rsp;
 
     for (int i = 0; i < arg_c; i++) {
@@ -440,19 +443,20 @@ static bool load(const char* file_name, struct intr_frame* if_)
         sp -= len;
         memcpy(sp, arg_v[i], len); // sp에 arg_v[i]를 len만큼 덮어씀
 
-        argvP[i] = (char*)sp;
+        arg_v[i] = (char*)sp;
     }
 
     // 2. 8바이트 패딩 맞추기
-    while (((uint8_t*)USER_STACK - sp) % 8 != 0) {
-        sp--;
-        *sp = 0;
-    }
+    size_t used = (uint8_t*)USER_STACK - sp;
+    size_t pad = (8 - (used % 8)) % 8;
+
+    sp -= pad;
+    memset(sp, 0, pad);
 
     // 3. 들어온 인자 + argv[argc]를 역순으로 저장. 이때 가지는 값은 1번으로 저장되었던 인자들의 주소값
     for (int i = arg_c; i >= 0; i--) {
         sp -= sizeof(char*);
-        memcpy(sp, &argvP[i], sizeof(char*));
+        memcpy(sp, &arg_v[i], sizeof(char*));
     }
     char** lastArgP = (char**)sp;
 
@@ -470,6 +474,9 @@ static bool load(const char* file_name, struct intr_frame* if_)
 
 done:
     /* We arrive here whether the load is successful or not. */
+    if (copy_file_name != NULL) {
+        palloc_free_page(copy_file_name);
+    }
     free(arg_v);
     file_close(file);
     return success;
