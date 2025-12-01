@@ -308,6 +308,8 @@ struct ELF64_PHDR {
 #define ELF ELF64_hdr
 #define Phdr ELF64_PHDR
 
+static bool parse_arguments(const char* cmd_line, char*** argv_ptr, int* argc_ptr);
+static void setup_argument_stack(struct intr_frame* if_, char** argv, int argc);
 static bool setup_stack(struct intr_frame* if_);
 static bool validate_segment(const struct Phdr*, struct file*);
 static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t read_bytes, uint32_t zero_bytes,
@@ -326,42 +328,10 @@ static bool load(const char* file_name, struct intr_frame* if_)
     bool success = false;
     int i;
 
-    /* file_name 문자열을 공백 기준으로 잘라 argv/argc를 구성 */
-    char* fn_copy = NULL;
-    int argc = 0;
     char** argv = NULL;
+    int argc = 0;
 
-    /* fn_copy용 별도의 4KB 페이지 할당 */
-    size_t file_name_len = strlen(file_name) + 1;
-    fn_copy = palloc_get_page(PAL_ZERO);
-    if (fn_copy == NULL)
-        goto done;
-
-    /* argv용 별도의 4KB 페이지 할당 */
-    argv = palloc_get_page(PAL_ZERO);
-    if (argv == NULL)
-        goto done;
-
-    /* 길이 검증 후 복사 */
-    if (file_name_len > PGSIZE)
-        goto done;
-    strlcpy(fn_copy, file_name, PGSIZE);
-
-    char* token;
-    char* save_ptr;
-    int max_argc = PGSIZE / sizeof(char*); // 최대 인자 개수
-
-    token = strtok_r(fn_copy, " ", &save_ptr);
-    if (token == NULL)
-        goto done;
-
-    while (token != NULL && argc < max_argc) {
-        argv[argc++] = token;
-        token = strtok_r(NULL, " ", &save_ptr);
-    }
-
-    /* 실행 파일 이름조차 없는 경우, 로딩을 시도하지 않고 바로 실패 처리 */
-    if (argc == 0)
+    if (!parse_arguments(file_name, &argv, &argc))
         goto done;
 
     /* Allocate and activate page directory. */
@@ -441,48 +411,91 @@ static bool load(const char* file_name, struct intr_frame* if_)
 
     /* Start address. */
     if_->rip = ehdr.e_entry;
-
-    /* 각 인자 문자열을 역순으로 스택에 복사하여,
-       이후 argv가 아래에서 위로 차례대로 인자를 가리키도록 만듬 */
-    for (i = argc - 1; i >= 0; i--) {
-        int str_len = strlen(argv[i]) + 1;
-        if_->rsp -= str_len;
-        memcpy((void*)if_->rsp, argv[i], str_len);
-        argv[i] = (char*)if_->rsp;
-    }
-
-    /* x86-64 호출 규약을 맞추기 위해 스택 포인터를 8의 배수로 정렬 */
-    if_->rsp &= ~0x7;
-
-    /* argv 포인터 배열과 마지막 NULL terminator를 스택에 저장
-       i == argc일 때는 NULL 슬롯을 위해 공간만 확보하고 값은 채우지 않음 */
-    for (i = argc; i >= 0; --i) {
-        if_->rsp -= sizeof(uint64_t);
-        if (i == argc) {
-            *(uint64_t*)if_->rsp = 0; // 명시적으로 NULL 저장
-            continue;
-        }
-        memcpy((void*)if_->rsp, &argv[i], sizeof(uint64_t));
-    }
-
-    /* x86-64 SysV ABI에 따라 사용자 프로그램 진입 시 인자를 설정 */
-    if_->rsp -= sizeof(uint64_t); // 호출 규약을 맞추기 위한 가짜 리턴 주소(fake return address) 자리 확보
-    if_->R.rdi = argc;            // 첫 번째 인자: argc
-    if_->R.rsi = if_->rsp + 8;    // 두 번째 인자: argv
+    setup_argument_stack(if_, argv, argc);
 
     success = true;
 
 done:
     /* We arrive here whether the load is successful or not. */
-
-    /* 동적할당 한 메모리 정리 */
-    if (fn_copy != NULL)
-        palloc_free_page(fn_copy);
     if (argv != NULL)
         palloc_free_page(argv);
-
     file_close(file);
     return success;
+}
+
+/* 명령줄을 파싱하여 argv/argc 구성
+   성공 시 true 반환, 실패 시 false 반환
+   주의: fn_copy는 호출자가 해제해야 함 */
+static bool parse_arguments(const char* cmd_line, char*** argv_ptr, int* argc_ptr)
+{
+    size_t cmd_len = strlen(cmd_line) + 1;
+    if (cmd_len > PGSIZE)
+        return false;
+
+    char* fn_copy = palloc_get_page(PAL_ZERO);
+    if (fn_copy == NULL) {
+        palloc_free_page(fn_copy);
+        return false;
+    }
+
+    /* argv용 별도의 4KB 페이지 할당 */
+    char** argv = palloc_get_page(PAL_ZERO);
+    if (argv == NULL) {
+        palloc_free_page(argv);
+        return false;
+    }
+
+    strlcpy(fn_copy, cmd_line, PGSIZE);
+
+    int argc = 0;
+    int max_argc = PGSIZE / sizeof(char*);
+    char* token;
+    char* save_ptr;
+
+    for (token = strtok_r(fn_copy, " ", &save_ptr); token != NULL && argc < max_argc;
+         token = strtok_r(NULL, " ", &save_ptr)) {
+        argv[argc++] = token;
+    }
+
+    if (argc == 0) {
+        palloc_free_page(fn_copy);
+        palloc_free_page(argv);
+        return false;
+    }
+
+    *argv_ptr = argv;
+    *argc_ptr = argc;
+    return true;
+}
+
+/* 사용자 스택에 인자를 적재 (x86-64 SysV ABI) */
+static void setup_argument_stack(struct intr_frame* if_, char** argv, int argc)
+{
+    /* 1. 인자 문자열을 역순으로 스택에 복사 */
+    for (int i = argc - 1; i >= 0; i--) {
+        size_t len = strlen(argv[i]) + 1;
+        if_->rsp -= len;
+        memcpy((void*)if_->rsp, argv[i], len);
+        argv[i] = (char*)if_->rsp; // 스택 주소로 갱신
+    }
+
+    /* 2. 8바이트 정렬 */
+    if_->rsp &= ~(uintptr_t)0x7;
+
+    /* 3. argv[argc] = NULL 및 argv 포인터 배열 */
+    if_->rsp -= sizeof(uint64_t) * (argc + 1);
+    uint64_t* argv_base = (uint64_t*)if_->rsp;
+    for (int i = 0; i < argc; i++)
+        argv_base[i] = (uint64_t)argv[i];
+    argv_base[argc] = 0; // NULL terminator
+
+    /* 4. fake return address */
+    if_->rsp -= sizeof(uint64_t);
+    *(uint64_t*)if_->rsp = 0;
+
+    /* 5. 레지스터 설정 */
+    if_->R.rdi = argc;
+    if_->R.rsi = (uint64_t)argv_base;
 }
 
 /* Checks whether PHDR describes a valid, loadable segment in
