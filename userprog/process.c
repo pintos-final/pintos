@@ -202,6 +202,8 @@ int process_wait(tid_t child_tid UNUSED)
     /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
      * XXX:       to add infinite loop here before
      * XXX:       implementing the process_wait. */
+
+    timer_sleep(100);
     return -1;
 }
 
@@ -313,10 +315,12 @@ static bool validate_segment(const struct Phdr*, struct file*);
 static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t read_bytes, uint32_t zero_bytes,
                          bool writable);
 
-/* Loads an ELF executable from FILE_NAME into the current thread.
- * Stores the executable's entry point into *RIP
- * and its initial stack pointer into *RSP.
- * Returns true if successful, false otherwise. */
+/*
+    FILE_NAME으로부터 ELF 실행 파일을 현재 스레드로 로드한다.
+    실행 파일의 엔트리 포인트를 *RIP에 저장하고,
+    초기 스택 포인터를 *RSP에 저장한다.
+    성공하면 true를, 그렇지 않으면 false를 반환한다.
+*/
 static bool load(const char* file_name, struct intr_frame* if_)
 {
     struct thread* t = thread_current();
@@ -331,6 +335,26 @@ static bool load(const char* file_name, struct intr_frame* if_)
     if (t->pml4 == NULL)
         goto done;
     process_activate(thread_current());
+
+    // file_name으로 들어온 인자 자르기
+    int arg_c = 0;
+
+    char** arg_v = malloc(sizeof(char*) * (LOADER_ARGS_LEN + 1));
+    char* save_ptr;
+
+    arg_v[arg_c] = strtok_r(file_name, " ", &save_ptr);
+
+    while (arg_v[arg_c] != NULL && arg_c < LOADER_ARGS_LEN) {
+        arg_c++;
+        arg_v[arg_c] = strtok_r(NULL, " ", &save_ptr);
+    }
+
+    // 파일명 설정
+    file_name = arg_v[0];
+    if (file_name == NULL) {
+        printf("load: no file name\n");
+        goto done;
+    }
 
     /* Open executable file. */
     file = filesys_open(file_name);
@@ -404,13 +428,49 @@ static bool load(const char* file_name, struct intr_frame* if_)
     /* Start address. */
     if_->rip = ehdr.e_entry;
 
-    /* TODO: Your code goes here.
-     * TODO: Implement argument passing (see project2/argument_passing.html). */
+    // 1. argv를 유저스택에 쌓는다
+    char* argvP[LOADER_ARGS_LEN + 1];
+
+    argvP[arg_c] = NULL;
+    uint8_t* sp = (uint8_t*)if_->rsp;
+
+    for (int i = 0; i < arg_c; i++) {
+        int len = strlen(arg_v[i]) + 1; // null문자 때문에 + 1
+
+        sp -= len;
+        memcpy(sp, arg_v[i], len); // sp에 arg_v[i]를 len만큼 덮어씀
+
+        argvP[i] = (char*)sp;
+    }
+
+    // 2. 8바이트 패딩 맞추기
+    while (((uint8_t*)USER_STACK - sp) % 8 != 0) {
+        sp--;
+        *sp = 0;
+    }
+
+    // 3. 들어온 인자 + argv[argc]를 역순으로 저장. 이때 가지는 값은 1번으로 저장되었던 인자들의 주소값
+    for (int i = arg_c; i >= 0; i--) {
+        sp -= sizeof(char*);
+        memcpy(sp, &argvP[i], sizeof(char*));
+    }
+    char** lastArgP = (char**)sp;
+
+    // 4. fake return address 추가
+    void* fake_return = NULL;
+    sp -= sizeof(fake_return);
+    memcpy(sp, &fake_return, sizeof(void*));
+
+    // 5. rsp, rdi, rsi 업데이트
+    if_->rsp = (uint64_t)sp;
+    if_->R.rdi = arg_c;
+    if_->R.rsi = lastArgP;
 
     success = true;
 
 done:
     /* We arrive here whether the load is successful or not. */
+    free(arg_v);
     file_close(file);
     return success;
 }
