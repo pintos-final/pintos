@@ -308,7 +308,7 @@ struct ELF64_PHDR {
 #define ELF ELF64_hdr
 #define Phdr ELF64_PHDR
 
-static bool parse_arguments(const char* cmd_line, char*** argv_ptr, int* argc_ptr);
+static bool parse_arguments(const char* cmd_line, char** fn_copy_ptr, char*** argv_ptr, int* argc_ptr);
 static void setup_argument_stack(struct intr_frame* if_, char** argv, int argc);
 static bool setup_stack(struct intr_frame* if_);
 static bool validate_segment(const struct Phdr*, struct file*);
@@ -328,10 +328,11 @@ static bool load(const char* file_name, struct intr_frame* if_)
     bool success = false;
     int i;
 
+    char* fn_copy = NULL;
     char** argv = NULL;
     int argc = 0;
 
-    if (!parse_arguments(file_name, &argv, &argc))
+    if (!parse_arguments(file_name, &fn_copy, &argv, &argc))
         goto done;
 
     /* Allocate and activate page directory. */
@@ -417,31 +418,30 @@ static bool load(const char* file_name, struct intr_frame* if_)
 
 done:
     /* We arrive here whether the load is successful or not. */
+    if (fn_copy != NULL)
+        palloc_free_page(fn_copy);
     if (argv != NULL)
         palloc_free_page(argv);
+
     file_close(file);
     return success;
 }
 
 /* 명령줄을 파싱하여 argv/argc 구성
-   성공 시 true 반환, 실패 시 false 반환
-   주의: fn_copy는 호출자가 해제해야 함 */
-static bool parse_arguments(const char* cmd_line, char*** argv_ptr, int* argc_ptr)
+   성공 시 true 반환, 실패 시 false 반환 */
+static bool parse_arguments(const char* cmd_line, char** fn_copy_ptr, char*** argv_ptr, int* argc_ptr)
 {
     size_t cmd_len = strlen(cmd_line) + 1;
     if (cmd_len > PGSIZE)
         return false;
 
     char* fn_copy = palloc_get_page(PAL_ZERO);
-    if (fn_copy == NULL) {
-        palloc_free_page(fn_copy);
+    if (fn_copy == NULL)
         return false;
-    }
 
-    /* argv용 별도의 4KB 페이지 할당 */
     char** argv = palloc_get_page(PAL_ZERO);
     if (argv == NULL) {
-        palloc_free_page(argv);
+        palloc_free_page(fn_copy);
         return false;
     }
 
@@ -463,6 +463,7 @@ static bool parse_arguments(const char* cmd_line, char*** argv_ptr, int* argc_pt
         return false;
     }
 
+    *fn_copy_ptr = fn_copy;
     *argv_ptr = argv;
     *argc_ptr = argc;
     return true;
