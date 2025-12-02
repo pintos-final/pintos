@@ -27,7 +27,7 @@ void syscall_handler(struct intr_frame*);
 static void check_valid_user_pointer(const void* uaddr);
 static void check_writable_pointer(void* uaddr);
 static void check_valid_buffer(const void* uaddr, size_t size, bool check_write);
-static void check_valid_string(const char* str, size_t max_len);
+static void check_valid_string(const char* str);
 
 void syscall_init(void)
 {
@@ -53,11 +53,11 @@ void syscall_handler(struct intr_frame* f UNUSED)
 static void check_valid_user_pointer(const void* uaddr)
 {
     if (uaddr == NULL)
-        exit(-1);
+        exit(EXIT_FAILURE);
     if (!is_user_vaddr(uaddr))
-        exit(-1);
+        exit(EXIT_FAILURE);
     if (!pml4_get_page(thread_current()->pml4, uaddr))
-        exit(-1);
+        exit(EXIT_FAILURE);
 }
 
 /* 주어진 유저 포인터가 쓰기 가능한 페이지를 가리키는지 검사
@@ -66,58 +66,59 @@ static void check_writable_pointer(void* uaddr)
 {
     uint64_t* pte = pml4e_walk(thread_current()->pml4, (uint64_t)uaddr, false);
     if (pte == NULL || !is_writable(pte))
-        exit(-1);
+        exit(EXIT_FAILURE);
 }
 
 static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
 {
     if (size == 0)
         return;
-    if (uaddr == NULL)
-        exit(-1);
 
     uintptr_t start_addr = (uintptr_t)uaddr;
     uintptr_t end_addr = start_addr + size - 1;
+    if (end_addr < start_addr) // 덧셈 오버플로우 방지
+        exit(EXIT_FAILURE);
 
-    if (end_addr < start_addr) // 오버플로우
-        exit(-1);
+    const uint8_t* start = (const uint8_t*)start_addr;
+    const uint8_t* end = (const uint8_t*)end_addr; // 마지막 바이트
 
-    for (uintptr_t addr = start_addr; addr <= end_addr;) {
-        check_valid_user_pointer((void*)addr);
+    /* 시작/끝이 걸쳐 있는 모든 페이지를 순회하며, 각 페이지 내의 실제 접근 바이트를 검증 */
+    uintptr_t current_page = (uintptr_t)pg_round_down(start);
+    uintptr_t end_page = (uintptr_t)pg_round_down(end);
+    for (uintptr_t page = current_page; page <= end_page; page += PGSIZE) {
+        const uint8_t* check_addr = (page < (uintptr_t)start) ? start : (const uint8_t*)page;
+        if (check_addr > end)
+            check_addr = end;
+
+        check_valid_user_pointer(check_addr);
+
+        /* 쓰기 권한 검사가 필요한 경우 각 페이지마다 검사 수행 */
         if (check_write)
-            check_writable_pointer((void*)addr);
-
-        uintptr_t next_page = pg_round_down(addr) + PGSIZE;
-        if (next_page <= addr) // 오버플로우 감지
-            break;
-        addr = next_page;
+            check_writable_pointer((void*)check_addr);
     }
 }
 
-/* 유저 문자열이 유효한지 검사
- * - 최대 max_len 길이 이내에 널 종료 문자가 존재하는지 확인
- * - 문자열의 각 바이트가 유효한 유저 메모리인지 확인
- * - 널 종료 문자가 max_len 바이트 내에 없으면 false 반환 */
-static void check_valid_string(const char* str, size_t max_len)
+static void check_valid_string(const char* str)
 {
     if (str == NULL)
-        exit(-1);
+        exit(EXIT_FAILURE);
 
-    const char* page_boundary = (const char*)pg_round_down(str) + PGSIZE;
+    const char* page_start = (const char*)pg_round_down(str);
+    const char* page_boundary = page_start + PGSIZE;
 
-    for (size_t i = 0; i <= max_len; i++) {
-        const char* current = str + i;
-
-        if (current >= page_boundary) { // i == 0일 때는 아래서 무조건 검사
-            check_valid_user_pointer(current);
-            page_boundary = (const char*)pg_round_down(current) + PGSIZE;
-        } else if (i == 0) {
-            check_valid_user_pointer(current); // 첫 바이트는 반드시 검사
+    for (const char* p = str;; p++) {
+        // 페이지 경계 도달 시마다 검증
+        if (p >= page_boundary) {
+            check_valid_user_pointer(p);
+            page_start = (const char*)pg_round_down(p);
+            page_boundary = page_start + PGSIZE;
+        } else if (p == str || (p - page_start) == 0) {
+            // 첫 문자 또는 새 페이지 첫 바이트 검증
+            check_valid_user_pointer(p);
         }
 
-        if (*current == '\0')
+        if (*p == '\0')
             return;
     }
-
-    exit(-1);
+}
 }
