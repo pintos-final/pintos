@@ -50,10 +50,27 @@ tid_t process_create_initd(const char* file_name)
         return TID_ERROR;
     strlcpy(fn_copy, file_name, PGSIZE);
 
+    // 프로세스명 잘라서 사용
+    char* name_copy = palloc_get_page(0);
+    if (name_copy == NULL) {
+        palloc_free_page(fn_copy);
+        return TID_ERROR;
+    }
+    strlcpy(name_copy, file_name, PGSIZE);
+
+    char* save_ptr;
+    char* name = strtok_r(name_copy, " ", &save_ptr);
+    if (name == NULL) {
+        palloc_free_page(fn_copy);
+        palloc_free_page(name_copy);
+        return TID_ERROR;
+    }
+
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
+    tid = thread_create(name, PRI_DEFAULT, initd, fn_copy);
     if (tid == TID_ERROR)
         palloc_free_page(fn_copy);
+    palloc_free_page(name_copy);
     return tid;
 }
 
@@ -202,7 +219,6 @@ int process_wait(tid_t child_tid UNUSED)
     /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
      * XXX:       to add infinite loop here before
      * XXX:       implementing the process_wait. */
-    timer_sleep(100);
     return -1;
 }
 
@@ -216,7 +232,9 @@ void process_exit(void)
      * TODO: We recommend you to implement process resource cleanup here. */
 
     // process termination message
-    printf("%s: exit(%d)\n", curr->name, curr->exit_code);
+    if (curr->pml4 != NULL) {
+        printf("%s: exit(%d)\n", curr->name, curr->exit_code);
+    }
 
     process_cleanup();
 }

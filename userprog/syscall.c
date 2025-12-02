@@ -42,8 +42,11 @@ static unsigned sys_tell(int fd);
 static void sys_close(int fd);
 
 // helper 함수 ==========
-static struct file* get_file_from_fd(int fd);
+static struct open_file_list_elem* get_list_elem_from_fd(int fd);
 static void check_valid_addr(void* addr);
+static void check_valid_string(const char* str);
+static void check_valid_buffer(const void* uaddr, size_t size, bool check_write);
+static void check_writable_pointer(void* uaddr);
 
 struct open_file_list_elem {
     int fd;
@@ -68,82 +71,48 @@ void syscall_init(void)
 /* The main system call interface */
 void syscall_handler(struct intr_frame* f)
 {
-    // 인자 순서 : rdi, rsi, rdx
-    // 시스템콜 번호 / 리턴 : rax
-
-    uint64_t syscall_no = f->R.rax;
-
-    int status;
-    char* file;
-    unsigned initial_size;
-    int fd;
-    void* buffer;
-    unsigned size;
-    unsigned position;
-
-    switch (syscall_no) {
+    switch (f->R.rax) {
     case SYS_HALT:
         sys_halt();
         break;
 
     case SYS_EXIT:
-        int status = f->R.rdi;
-        sys_exit(status);
+        sys_exit((int)f->R.rdi);
         break;
 
     case SYS_CREATE:
-        file = f->R.rdi;
-        initial_size = f->R.rsi;
-        f->R.rax = sys_create(file, initial_size);
+        f->R.rax = sys_create((const char*)f->R.rdi, (unsigned int)f->R.rsi);
         break;
 
     case SYS_REMOVE:
-        file = f->R.rdi;
-        f->R.rax = sys_remove(file);
+        f->R.rax = sys_remove((const char*)f->R.rdi);
         break;
 
     case SYS_OPEN:
-        file = f->R.rdi;
-        f->R.rax = sys_open(file);
+        f->R.rax = sys_open((const char*)f->R.rdi);
         break;
     case SYS_FILESIZE:
-        fd = f->R.rdi;
-        f->R.rax = sys_filesize(fd);
+        f->R.rax = sys_filesize((int)f->R.rdi);
         break;
 
     case SYS_READ:
-        fd = f->R.rdi;
-        buffer = f->R.rsi;
-        size = f->R.rdx;
-
-        f->R.rax = sys_read(fd, buffer, size);
+        f->R.rax = sys_read((int)f->R.rdi, (void*)f->R.rsi, (unsigned int)f->R.rdx);
         break;
 
     case SYS_WRITE:
-        fd = f->R.rdi;
-        buffer = f->R.rsi;
-        size = f->R.rdx;
-
-        f->R.rax = sys_write(fd, buffer, size);
+        f->R.rax = sys_write((int)f->R.rdi, (void*)f->R.rsi, (unsigned int)f->R.rdx);
         break;
 
     case SYS_SEEK:
-        fd = f->R.rdi;
-        position = f->R.rsi;
-
-        sys_seek(fd, position);
+        sys_seek((int)f->R.rdi, (unsigned int)f->R.rsi);
         break;
 
     case SYS_TELL:
-        fd = f->R.rdi;
-
-        f->R.rax = sys_tell(fd);
+        f->R.rax = sys_tell((int)f->R.rdi);
         break;
 
     case SYS_CLOSE:
-        fd = f->R.rdi;
-
-        sys_close(fd);
+        sys_close((int)f->R.rdi);
         break;
     }
 }
@@ -161,7 +130,7 @@ void sys_exit(int status)
 
 static bool sys_create(const char* file, unsigned initial_size)
 {
-    check_valid_addr(file);
+    check_valid_string(file);
 
     lock_acquire(&file_lock);
     bool is_created = filesys_create(file, initial_size);
@@ -171,7 +140,7 @@ static bool sys_create(const char* file, unsigned initial_size)
 
 static bool sys_remove(const char* file)
 {
-    check_valid_addr(file);
+    check_valid_string(file);
 
     lock_acquire(&file_lock);
     bool is_removed = filesys_remove(file);
@@ -181,7 +150,7 @@ static bool sys_remove(const char* file)
 
 static int sys_open(const char* file)
 {
-    check_valid_addr(file);
+    check_valid_string(file);
 
     lock_acquire(&file_lock);
     struct file* open_file = filesys_open(file);
@@ -204,7 +173,7 @@ static int sys_filesize(int fd)
 {
     lock_acquire(&file_lock);
 
-    struct file* file = get_file_from_fd(fd);
+    struct file* file = get_list_elem_from_fd(fd)->file;
     int file_len = file_length(file);
     lock_release(&file_lock);
     return file_len;
@@ -212,8 +181,10 @@ static int sys_filesize(int fd)
 
 static int sys_read(int fd, void* buffer, unsigned size)
 {
-    check_valid_addr(buffer);
-    check_valid_addr(buffer + size - 1);
+    if (size == 0) {
+        return 0;
+    }
+    check_valid_buffer(buffer, size, false);
 
     uint8_t* buf = (uint8_t*)buffer;
 
@@ -226,7 +197,7 @@ static int sys_read(int fd, void* buffer, unsigned size)
     } else if (fd == 1) {
         return -1;
     } else {
-        struct file* file = get_file_from_fd(fd);
+        struct file* file = get_list_elem_from_fd(fd)->file;
         if (file == NULL) {
             return -1;
         }
@@ -239,8 +210,11 @@ static int sys_read(int fd, void* buffer, unsigned size)
 
 static int sys_write(int fd, const void* buffer, unsigned size)
 {
-    check_valid_addr(buffer);
-    check_valid_addr(buffer + size - 1);
+    if (size == 0) {
+        return 0;
+    }
+
+    check_valid_buffer(buffer, size, true);
 
     if (fd == 0 || fd == NULL) {
         return -1;
@@ -248,7 +222,7 @@ static int sys_write(int fd, const void* buffer, unsigned size)
         putbuf((const char*)buffer, (size_t)size);
         return size;
     } else {
-        struct file* write_file = get_file_from_fd(fd);
+        struct file* write_file = get_list_elem_from_fd(fd)->file;
         if (write_file != NULL) {
             lock_acquire(&file_lock);
             int bytes_written = file_write(write_file, buffer, (off_t)size);
@@ -263,7 +237,7 @@ static int sys_write(int fd, const void* buffer, unsigned size)
 
 static void sys_seek(int fd, unsigned position)
 {
-    struct file* file = get_file_from_fd(fd);
+    struct file* file = get_list_elem_from_fd(fd)->file;
     lock_acquire(&file_lock);
     file_seek(file, (off_t)position);
     lock_release(&file_lock);
@@ -271,7 +245,7 @@ static void sys_seek(int fd, unsigned position)
 
 static unsigned sys_tell(int fd)
 {
-    struct file* file = get_file_from_fd(fd);
+    struct file* file = get_list_elem_from_fd(fd)->file;
     lock_acquire(&file_lock);
     unsigned tell_byte = file_tell(file);
     lock_release(&file_lock);
@@ -282,24 +256,19 @@ static void sys_close(int fd)
 {
 
     // open_file_list 에서 제거
-    struct list* open_file_list = &thread_current()->open_file_list;
-    struct list_elem* e;
-
-    for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
-        struct open_file_list_elem* fd_entry = list_entry(e, struct open_file_list_elem, elem);
-        if (fd_entry->fd == fd) {
-            list_remove(&fd_entry->elem);
-
-            lock_acquire(&file_lock);
-            file_close(fd_entry->file);
-            lock_release(&file_lock);
-            break;
-        }
+    struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+    if (fd_entry == NULL) {
+        return;
     }
+    list_remove(&fd_entry->elem);
+
+    lock_acquire(&file_lock);
+    file_close(fd_entry->file);
+    lock_release(&file_lock);
 }
 
-// fd로 file 찾는 함수
-static struct file* get_file_from_fd(int fd)
+// fd 인자로 받아 open_file_ilst_elem 리턴하는 함수
+static struct open_file_list_elem* get_list_elem_from_fd(int fd)
 {
     struct list* open_file_list = &thread_current()->open_file_list;
     struct list_elem* e;
@@ -307,7 +276,7 @@ static struct file* get_file_from_fd(int fd)
     for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
         struct open_file_list_elem* fd_entry = list_entry(e, struct open_file_list_elem, elem);
         if (fd_entry->fd == fd) {
-            return fd_entry->file;
+            return fd_entry;
         }
     }
     return NULL;
@@ -318,4 +287,58 @@ static void check_valid_addr(void* addr)
     if (addr == NULL || !is_user_vaddr(addr) || pml4_get_page(thread_current()->pml4, addr) == NULL) {
         sys_exit(-1);
     }
+}
+
+static void check_valid_string(const char* str)
+{
+    if (str == NULL) {
+        sys_exit(-1);
+    }
+
+    const char* page_entry = (const char*)pg_round_down(str);
+    const char* page_boundary = page_entry + PGSIZE;
+
+    for (const char* p = str;; p++) {
+        if (p >= page_boundary) {
+            check_valid_addr(p);
+            page_entry = (const char*)pg_round_down(p);
+            page_boundary = page_entry + PGSIZE;
+        } else if (p == str || (p - page_entry) == 0) {
+            check_valid_addr(p);
+        }
+        if (*p == '\0') {
+            return;
+        }
+    }
+}
+
+static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
+{
+    if (size == 0)
+        return;
+    uintptr_t start_addr = (uintptr_t)uaddr;
+    uintptr_t end_addr = start_addr + size - 1;
+    if (end_addr < start_addr) // 덧셈 오버플로우 방지
+        sys_exit(-1);
+    const uint8_t* start = (const uint8_t*)start_addr;
+    const uint8_t* end = (const uint8_t*)end_addr; // 마지막 바이트
+    /* 시작/끝이 걸쳐 있는 모든 페이지를 순회하며, 각 페이지 내의 실제 접근 바이트를 검증 */
+    uintptr_t current_page = (uintptr_t)pg_round_down(start);
+    uintptr_t end_page = (uintptr_t)pg_round_down(end);
+    for (uintptr_t page = current_page; page <= end_page; page += PGSIZE) {
+        const uint8_t* check_addr = (page < (uintptr_t)start) ? start : (const uint8_t*)page;
+        if (check_addr > end)
+            check_addr = end;
+        check_valid_addr(check_addr);
+        /* 쓰기 권한 검사가 필요한 경우 각 페이지마다 검사 수행 */
+        if (check_write)
+            check_writable_pointer((void*)check_addr);
+    }
+}
+
+static void check_writable_pointer(void* uaddr)
+{
+    uint64_t* pte = pml4e_walk(thread_current()->pml4, (uint64_t)uaddr, false);
+    if (pte == NULL || !is_writable(pte))
+        sys_exit(-1);
 }
