@@ -419,11 +419,14 @@ static void init_thread(struct thread* t, const char* name, int priority)
     memset(t, 0, sizeof *t);
     t->status = THREAD_BLOCKED;
     strlcpy(t->name, name, sizeof t->name);
+    char* savePtr;
+    strtok_r(t->name, " ", &savePtr);
     t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void*);
     t->priority = priority;
     t->magic = THREAD_MAGIC;
     t->original_priority = priority;
     list_init(&t->donations);
+    list_init(&t->open_file_list);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should

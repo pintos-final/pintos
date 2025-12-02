@@ -103,6 +103,9 @@ struct thread {
     struct list_elem donation_elem; /* donations 리스트용 새로운 elem */
     struct list donations;          /* 기부자 리스트 */
 
+    int exit_code;              /* 종료 코드 */
+    struct list open_file_list; /* open 파일 목록(fd 리스트) */
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint64_t* pml4; /* Page map level 4 */
