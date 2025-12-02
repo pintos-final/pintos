@@ -223,10 +223,21 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
     struct thread* curr = thread_current();
-    /* TODO: Your code goes here.
-     * TODO: Implement process termination message (see
-     * TODO: project2/process_termination.html).
-     * TODO: We recommend you to implement process resource cleanup here. */
+    
+    /* 유저 프로세스인 경우에만 종료 메시지 출력 */
+    if (curr->pml4 != NULL) {
+        printf("%s: exit(%d)\n", curr->name, curr->exit_status);
+    }
+
+    /* 파일 디스크립터 테이블의 모든 열린 파일을 닫음 */
+    for (int fd = FD_MIN; fd < FD_MAX; fd++) {
+        if (curr->fd_table[fd] != NULL) {
+            lock_acquire(&filesys_lock);
+            file_close(curr->fd_table[fd]);
+            lock_release(&filesys_lock);
+            curr->fd_table[fd] = NULL;
+        }
+    }
 
     process_cleanup();
 }
