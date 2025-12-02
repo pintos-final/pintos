@@ -7,6 +7,7 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -17,6 +18,7 @@
 #include "threads/thread.h"
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
+#include "threads/synch.h"
 #include "intrinsic.h"
 #ifdef VM
 #include "vm/vm.h"
@@ -41,6 +43,7 @@ static void process_init(void)
 tid_t process_create_initd(const char* file_name)
 {
     char* fn_copy;
+    char* prog_name;
     tid_t tid;
 
     /* Make a copy of FILE_NAME.
@@ -51,9 +54,20 @@ tid_t process_create_initd(const char* file_name)
     strlcpy(fn_copy, file_name, PGSIZE);
 
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, initd, fn_copy);
+    prog_name = palloc_get_page(0); /* 프로그램 이름만 추출 (임시 버퍼 사용) */
+    if (prog_name == NULL) {
+        palloc_free_page(fn_copy);
+        return TID_ERROR;
+    }
+    strlcpy(prog_name, file_name, PGSIZE);
+
+    char* save_ptr;
+    char* name = strtok_r(prog_name, " ", &save_ptr);
+
+    tid = thread_create(name, PRI_DEFAULT, initd, fn_copy);
     if (tid == TID_ERROR)
         palloc_free_page(fn_copy);
+    palloc_free_page(prog_name);
     return tid;
 }
 
