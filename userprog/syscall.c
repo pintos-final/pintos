@@ -56,12 +56,6 @@ static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
 static void check_writable_pointer(void* uaddr);
 static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
 
-struct open_file_list_elem {
-    int fd;
-    struct file* file;
-    struct list_elem elem;
-};
-
 struct lock file_lock;
 
 void syscall_init(void)
