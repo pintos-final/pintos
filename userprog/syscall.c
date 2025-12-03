@@ -188,19 +188,18 @@ static int sys_open(const char* file)
 
         struct open_file_list_elem* curr_entry = list_entry(e, struct open_file_list_elem, elem);
 
-        // next가 없으면 현재 노드의 fd에 1 더해서 push_back
+        /* 현재 노드가 마지막 실제 노드라면(다음이 tail 센티넬),
+           마지막 fd 바로 다음 번호를 새로 할당하고 맨 뒤에 추가한다. */
         if (e->next == list_tail(open_file_list)) {
             fd_entry->fd = curr_entry->fd + 1;
             list_push_back(open_file_list, &fd_entry->elem);
             return fd_entry->fd;
         }
 
+        /* 다음 노드가 있고,
+           - 만약 다음 노드의 fd가 (현재 fd + 1)이면: 중간에 빈 fd가 없으므로 계속 순회한다.
+           - 그렇지 않다면: (현재 fd + 1)이 비어 있는 최소 fd이므로, 그 자리에 새 항목을 끼워 넣는다. */
         struct open_file_list_elem* next_entry = list_entry(e->next, struct open_file_list_elem, elem);
-        /*
-            next 노드가 있는데)
-            1. next의 fd가 +1 일 경우 : continue
-            2. next의 fd가 +1 이 아닐 경우 : list_insert
-        */
         if (curr_entry->fd + 1 == next_entry->fd) {
             continue;
         } else {
@@ -247,6 +246,7 @@ static int sys_read(int fd, void* buffer, unsigned size)
             return SYSCALL_FAILURE;
         }
         struct file* file = get_list_elem_from_fd(fd)->file;
+
         if (file == NULL) {
             return SYSCALL_FAILURE;
         }
