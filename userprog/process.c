@@ -226,12 +226,16 @@ int process_wait(tid_t child_tid UNUSED)
 void process_exit(void)
 {
     struct thread* curr = thread_current();
-    /* TODO: Your code goes here.
-     * TODO: Implement process termination message (see
-     * TODO: project2/process_termination.html).
-     * TODO: We recommend you to implement process resource cleanup here. */
 
-    // process termination message
+    /* exec_file을 먼저 닫아서 쓰기 허용 */
+    if (curr->exec_file) {
+        lock_acquire(&file_lock);
+        file_close(curr->exec_file);
+        lock_release(&file_lock);
+        curr->exec_file = NULL;
+    }
+
+    /* 유저 프로세스인 경우에만 종료 메시지 출력 */
     if (curr->pml4 != NULL) {
         printf("%s: exit(%d)\n", curr->name, curr->exit_code);
     }
@@ -247,6 +251,14 @@ static void process_cleanup(void)
 #ifdef VM
     supplemental_page_table_kill(&curr->spt);
 #endif
+
+    /* 실행 중인 파일에 대한 쓰기 제한을 해제하고 닫음 */
+    if (curr->exec_file) {
+        lock_acquire(&file_lock);
+        file_close(curr->exec_file);
+        lock_release(&file_lock);
+        curr->exec_file = NULL;
+    }
 
     uint64_t* pml4;
     /* Destroy the current process's page directory and switch back
@@ -439,13 +451,22 @@ static bool load(const char* file_name, struct intr_frame* if_)
     success = true;
 
 done:
-    /* We arrive here whether the load is successful or not. */
+    /* 메모리 해제 */
     if (fn_copy != NULL)
         palloc_free_page(fn_copy);
     if (argv != NULL)
         palloc_free_page(argv);
 
+    /* 파일 처리 */
+    lock_acquire(&file_lock);
+    if (success) {
+        t->exec_file = file;
+        file_deny_write(file);
+    } else if (file != NULL) {
     file_close(file);
+    }
+    lock_release(&file_lock);
+
     return success;
 }
 
