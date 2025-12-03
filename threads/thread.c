@@ -424,6 +424,9 @@ static void init_thread(struct thread* t, const char* name, int priority)
     t->magic = THREAD_MAGIC;
     t->original_priority = priority;
     list_init(&t->donations);
+#ifdef USERPROG
+    list_init(&t->open_file_list);
+#endif
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
