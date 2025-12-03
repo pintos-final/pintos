@@ -28,6 +28,13 @@ void syscall_handler(struct intr_frame*);
 #define MSR_LSTAR 0xc0000082        /* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
 
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define FD_MIN 2 /* fd 최소값 */
+
+#define SYSCALL_FAILURE -1 /* 시스템콜에서 리턴하는 -1 */
+#define EXIT_FAILURE -1    /* exit에서 리턴하는 -1 */
+
 // syscall 함수 ========
 static void sys_halt(void);
 static void sys_exit(int status);
@@ -158,27 +165,48 @@ static int sys_open(const char* file)
     lock_release(&file_lock);
 
     if (open_file == NULL) {
-        return -1;
+        return SYSCALL_FAILURE;
     }
     struct thread* curr = thread_current();
+
+    struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
+    fd_entry->file = open_file;
 
     // fd list 순회하며 비어있는 부분 체크해 fd값 부여
     struct list* open_file_list = &thread_current()->open_file_list;
     struct list_elem* e;
 
-    int fd = 2;
-    for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
-        struct open_file_list_elem* fd_entry = list_entry(e, struct open_file_list_elem, elem);
-        if (fd_entry->fd != fd++) {
-            break;
-        }
+    if (list_empty(open_file_list)) {
+        fd_entry->fd = FD_MIN;
+        list_push_back(open_file_list, &fd_entry->elem);
+        return fd_entry->fd;
     }
 
-    struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
-    fd_entry->fd = fd;
-    fd_entry->file = open_file;
-    list_insert_ordered(&curr->open_file_list, &fd_entry->elem, fd_less, NULL);
-    return fd;
+    for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
+
+        struct open_file_list_elem* curr_entry = list_entry(e, struct open_file_list_elem, elem);
+
+        // next가 없으면 현재 노드의 fd에 1 더해서 push_back
+        if (e->next == list_tail(open_file_list)) {
+            fd_entry->fd = curr_entry->fd + 1;
+            list_push_back(open_file_list, &fd_entry->elem);
+            return fd_entry->fd;
+    }
+
+        struct open_file_list_elem* next_entry = list_entry(e->next, struct open_file_list_elem, elem);
+        /*
+            next 노드가 있는데)
+            1. next의 fd가 +1 일 경우 : continue
+            2. next의 fd가 +1 이 아닐 경우 : list_insert
+        */
+        if (curr_entry->fd + 1 == next_entry->fd) {
+            continue;
+        } else {
+            fd_entry->fd = curr_entry->fd + 1;
+            list_insert(e->next, &fd_entry->elem);
+            return fd_entry->fd;
+        }
+    }
 }
 
 static int sys_filesize(int fd)
