@@ -47,6 +47,7 @@ static void check_valid_addr(void* addr);
 static void check_valid_string(const char* str);
 static void check_valid_buffer(const void* uaddr, size_t size, bool check_write);
 static void check_writable_pointer(void* uaddr);
+static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
 
 struct open_file_list_elem {
     int fd;
@@ -160,20 +161,31 @@ static int sys_open(const char* file)
         return -1;
     }
     struct thread* curr = thread_current();
-    int fd = list_size(&curr->open_file_list) + 2; // 0과 1은 표준입,출력
+
+    // fd list 순회하며 비어있는 부분 체크해 fd값 부여
+    struct list* open_file_list = &thread_current()->open_file_list;
+    struct list_elem* e;
+
+    int fd = 2;
+    for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
+        struct open_file_list_elem* fd_entry = list_entry(e, struct open_file_list_elem, elem);
+        if (fd_entry->fd != fd++) {
+            break;
+        }
+    }
 
     struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
     fd_entry->fd = fd;
     fd_entry->file = open_file;
-    list_push_back(&curr->open_file_list, &fd_entry->elem);
+    list_insert_ordered(&curr->open_file_list, &fd_entry->elem, fd_less, NULL);
     return fd;
 }
 
 static int sys_filesize(int fd)
 {
-    lock_acquire(&file_lock);
-
     struct file* file = get_list_elem_from_fd(fd)->file;
+
+    lock_acquire(&file_lock);
     int file_len = file_length(file);
     lock_release(&file_lock);
     return file_len;
@@ -341,4 +353,11 @@ static void check_writable_pointer(void* uaddr)
     uint64_t* pte = pml4e_walk(thread_current()->pml4, (uint64_t)uaddr, false);
     if (pte == NULL || !is_writable(pte))
         sys_exit(-1);
+}
+
+static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
+{
+    struct open_file_list_elem* fd_entry_a = list_entry(a, struct open_file_list_elem, elem);
+    struct open_file_list_elem* fd_entry_b = list_entry(b, struct open_file_list_elem, elem);
+    return fd_entry_a->fd < fd_entry_b->fd;
 }
