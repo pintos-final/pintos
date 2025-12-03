@@ -165,6 +165,13 @@ static int sys_open(const char* file)
     struct thread* curr = thread_current();
 
     struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
+    if (fd_entry == NULL) {
+        lock_acquire(&file_lock);
+        file_close(open_file);
+        lock_release(&file_lock);
+        return SYSCALL_FAILURE;
+    }
+
     fd_entry->file = open_file;
 
     // fd list 순회하며 비어있는 부분 체크해 fd값 부여
