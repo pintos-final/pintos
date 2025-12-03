@@ -122,6 +122,8 @@ void syscall_handler(struct intr_frame* f)
     case SYS_CLOSE:
         sys_close((int)f->R.rdi);
         break;
+    default:
+        sys_exit(EXIT_FAILURE);
     }
 }
 
@@ -173,7 +175,7 @@ static int sys_open(const char* file)
     fd_entry->file = open_file;
 
     // fd list 순회하며 비어있는 부분 체크해 fd값 부여
-    struct list* open_file_list = &thread_current()->open_file_list;
+    struct list* open_file_list = &curr->open_file_list;
     struct list_elem* e;
 
     if (list_empty(open_file_list)) {
@@ -191,7 +193,7 @@ static int sys_open(const char* file)
             fd_entry->fd = curr_entry->fd + 1;
             list_push_back(open_file_list, &fd_entry->elem);
             return fd_entry->fd;
-    }
+        }
 
         struct open_file_list_elem* next_entry = list_entry(e->next, struct open_file_list_elem, elem);
         /*
@@ -211,8 +213,11 @@ static int sys_open(const char* file)
 
 static int sys_filesize(int fd)
 {
-    struct file* file = get_list_elem_from_fd(fd)->file;
-
+    struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+    if (fd_entry == NULL) {
+        return SYSCALL_FAILURE;
+    }
+    struct file* file = fd_entry->file;
     lock_acquire(&file_lock);
     int file_len = file_length(file);
     lock_release(&file_lock);
@@ -228,18 +233,22 @@ static int sys_read(int fd, void* buffer, unsigned size)
 
     uint8_t* buf = (uint8_t*)buffer;
 
-    if (fd == 0) {
+    if (fd == STDIN_FILENO) {
         for (int i = 0; i < size; i++) {
             uint8_t key = input_getc();
             buf[i] = key;
         }
         return size;
-    } else if (fd == 1) {
-        return -1;
+    } else if (fd == STDOUT_FILENO) {
+        return SYSCALL_FAILURE;
     } else {
+        struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+        if (fd_entry == NULL) {
+            return SYSCALL_FAILURE;
+        }
         struct file* file = get_list_elem_from_fd(fd)->file;
         if (file == NULL) {
-            return -1;
+            return SYSCALL_FAILURE;
         }
         lock_acquire(&file_lock);
         int read_byte = file_read(file, buffer, (off_t)size);
@@ -256,13 +265,17 @@ static int sys_write(int fd, const void* buffer, unsigned size)
 
     check_valid_buffer(buffer, size, true);
 
-    if (fd == 0 || fd == NULL) {
-        return -1;
-    } else if (fd == 1) {
+    if (fd == STDIN_FILENO || fd == NULL) {
+        return SYSCALL_FAILURE;
+    } else if (fd == STDOUT_FILENO) {
         putbuf((const char*)buffer, (size_t)size);
         return size;
     } else {
-        struct file* write_file = get_list_elem_from_fd(fd)->file;
+        struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+        if (fd_entry == NULL) {
+            return SYSCALL_FAILURE;
+        }
+        struct file* write_file = fd_entry->file;
         if (write_file != NULL) {
             lock_acquire(&file_lock);
             int bytes_written = file_write(write_file, buffer, (off_t)size);
@@ -270,14 +283,18 @@ static int sys_write(int fd, const void* buffer, unsigned size)
 
             return bytes_written;
         } else {
-            return -1;
+            return SYSCALL_FAILURE;
         }
     }
 }
 
 static void sys_seek(int fd, unsigned position)
 {
-    struct file* file = get_list_elem_from_fd(fd)->file;
+    struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+    if (fd_entry == NULL) {
+        return SYSCALL_FAILURE;
+    }
+    struct file* file = fd_entry->file;
     lock_acquire(&file_lock);
     file_seek(file, (off_t)position);
     lock_release(&file_lock);
@@ -285,7 +302,11 @@ static void sys_seek(int fd, unsigned position)
 
 static unsigned sys_tell(int fd)
 {
-    struct file* file = get_list_elem_from_fd(fd)->file;
+    struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
+    if (fd_entry == NULL) {
+        return SYSCALL_FAILURE;
+    }
+    struct file* file = fd_entry->file;
     lock_acquire(&file_lock);
     unsigned tell_byte = file_tell(file);
     lock_release(&file_lock);
@@ -313,6 +334,9 @@ static struct open_file_list_elem* get_list_elem_from_fd(int fd)
     struct list* open_file_list = &thread_current()->open_file_list;
     struct list_elem* e;
 
+    if (list_empty(open_file_list)) {
+        return NULL;
+    }
     for (e = list_begin(open_file_list); e != list_end(open_file_list); e = list_next(e)) {
         struct open_file_list_elem* fd_entry = list_entry(e, struct open_file_list_elem, elem);
         if (fd_entry->fd == fd) {
@@ -325,14 +349,14 @@ static struct open_file_list_elem* get_list_elem_from_fd(int fd)
 static void check_valid_addr(void* addr)
 {
     if (addr == NULL || !is_user_vaddr(addr) || pml4_get_page(thread_current()->pml4, addr) == NULL) {
-        sys_exit(-1);
+        sys_exit(EXIT_FAILURE);
     }
 }
 
 static void check_valid_string(const char* str)
 {
     if (str == NULL) {
-        sys_exit(-1);
+        sys_exit(EXIT_FAILURE);
     }
 
     const char* page_entry = (const char*)pg_round_down(str);
@@ -359,7 +383,7 @@ static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
     uintptr_t start_addr = (uintptr_t)uaddr;
     uintptr_t end_addr = start_addr + size - 1;
     if (end_addr < start_addr) // 덧셈 오버플로우 방지
-        sys_exit(-1);
+        sys_exit(EXIT_FAILURE);
     const uint8_t* start = (const uint8_t*)start_addr;
     const uint8_t* end = (const uint8_t*)end_addr; // 마지막 바이트
     /* 시작/끝이 걸쳐 있는 모든 페이지를 순회하며, 각 페이지 내의 실제 접근 바이트를 검증 */
@@ -380,7 +404,7 @@ static void check_writable_pointer(void* uaddr)
 {
     uint64_t* pte = pml4e_walk(thread_current()->pml4, (uint64_t)uaddr, false);
     if (pte == NULL || !is_writable(pte))
-        sys_exit(-1);
+        sys_exit(EXIT_FAILURE);
 }
 
 static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED)
