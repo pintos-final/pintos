@@ -12,6 +12,8 @@
 #include "filesys/filesys.h"
 #include "threads/synch.h"
 
+#include "threads/palloc.h"
+
 void syscall_entry(void);
 void syscall_handler(struct intr_frame*);
 
@@ -35,9 +37,16 @@ void syscall_handler(struct intr_frame*);
 #define SYSCALL_FAILURE -1 /* 시스템콜에서 리턴하는 -1 */
 #define EXIT_FAILURE -1    /* exit에서 리턴하는 -1 */
 
+/* Process identifier. */
+typedef int pid_t;
+#define PID_ERROR ((pid_t) - 1)
+
 // syscall 함수 ========
 static void sys_halt(void);
 static void sys_exit(int status);
+pid_t sys_fork(const char* thread_name);
+int sys_exec(const char* cmd_line);
+int sys_wait(pid_t pid);
 static bool sys_create(const char* file, unsigned initial_size);
 static bool sys_remove(const char* file);
 static int sys_open(const char* file);
@@ -88,6 +97,13 @@ void syscall_handler(struct intr_frame* f)
         sys_exit((int)f->R.rdi);
         break;
 
+    case SYS_FORK:
+        break;
+    case SYS_EXEC:
+        f->R.rax = sys_exec((const char*)f->R.rdi);
+        break;
+    case SYS_WAIT:
+        break;
     case SYS_CREATE:
         f->R.rax = sys_create((const char*)f->R.rdi, (unsigned int)f->R.rsi);
         break;
@@ -136,6 +152,38 @@ void sys_exit(int status)
 {
     thread_current()->exit_code = status;
     thread_exit();
+}
+
+pid_t sys_fork(const char* thread_name)
+{
+}
+
+int sys_exec(const char* cmd_line)
+{
+    check_valid_string(cmd_line);
+
+    // 4KB 이상의 입력은 차단
+    if (strlen(cmd_line) + 1 > PGSIZE) {
+        sys_exit(EXIT_FAILURE);
+    }
+
+    // 커널 영역에 입력값 복사
+    char* temp_kernel_argv = palloc_get_page(PAL_ZERO);
+    if (temp_kernel_argv == NULL) {
+        sys_exit(EXIT_FAILURE);
+    }
+    strlcpy(temp_kernel_argv, cmd_line, strlen(cmd_line) + 1);
+
+    // exec 실패하면 exit(-1)
+    if (process_exec(temp_kernel_argv) == -1) {
+        sys_exit(EXIT_FAILURE);
+    }
+
+    NOT_REACHED();
+}
+
+int sys_wait(pid_t pid)
+{
 }
 
 static bool sys_create(const char* file, unsigned initial_size)
