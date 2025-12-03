@@ -5,11 +5,15 @@
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "userprog/gdt.h"
+#include "userprog/process.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/synch.h"
+#include "threads/palloc.h"
+
+typedef int pid_t;
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame*);
@@ -37,6 +41,9 @@ void syscall_handler(struct intr_frame*);
 // syscall 함수 ========
 static void sys_halt(void);
 static void sys_exit(int status);
+pid_t sys_fork(const char* thread_name);
+int sys_exec(const char* file);
+int sys_wait(pid_t pid);
 static bool sys_create(const char* file, unsigned initial_size);
 static bool sys_remove(const char* file);
 static int sys_open(const char* file);
@@ -79,6 +86,19 @@ void syscall_handler(struct intr_frame* f)
 
     case SYS_EXIT:
         sys_exit((int)f->R.rdi);
+        break;
+
+    case SYS_FORK:
+        memcpy(&thread_current()->parent_if, f, sizeof(struct intr_frame));
+        f->R.rax = sys_fork((const char*)f->R.rdi);
+        break;
+
+    case SYS_EXEC:
+        f->R.rax = sys_exec((const char*)f->R.rdi);
+        break;
+
+    case SYS_WAIT:
+        f->R.rax = sys_wait((pid_t)f->R.rdi);
         break;
 
     case SYS_CREATE:
@@ -129,6 +149,33 @@ void sys_exit(int status)
 {
     thread_current()->exit_code = status;
     thread_exit();
+}
+
+pid_t sys_fork(const char* thread_name)
+{
+    check_valid_string(thread_name);
+    return process_fork(thread_name, &thread_current()->parent_if);
+}
+
+int sys_exec(const char* file)
+{
+    check_valid_string(file);
+
+    char* file_copy = palloc_get_page(PAL_ZERO);
+    if (file_copy == NULL)
+        sys_exit(EXIT_FAILURE);
+
+    strlcpy(file_copy, file, PGSIZE);
+
+    if (process_exec(file_copy) == SYSCALL_FAILURE)
+        sys_exit(EXIT_FAILURE);
+
+    NOT_REACHED();
+}
+
+int sys_wait(pid_t pid)
+{
+    return process_wait((tid_t)pid);
 }
 
 static bool sys_create(const char* file, unsigned initial_size)

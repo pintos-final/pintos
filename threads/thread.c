@@ -198,6 +198,15 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
     t->tf.cs = SEL_KCSEG;
     t->tf.eflags = FLAG_IF;
 
+#ifdef USERPROG
+    struct thread* curr = thread_current();
+
+    if (strcmp(name, "idle") != 0) {
+        t->parent = curr;
+        list_push_back(&curr->child_list, &t->child_elem);
+    }
+#endif
+
     /* Add to run queue. */
     thread_unblock(t);
 
@@ -426,6 +435,11 @@ static void init_thread(struct thread* t, const char* name, int priority)
     list_init(&t->donations);
 #ifdef USERPROG
     list_init(&t->open_file_list);
+    list_init(&t->child_list);
+    sema_init(&t->wait_sema, 0);
+    sema_init(&t->fork_sema, 0);
+    sema_init(&t->free_sema, 0);
+    t->exit_code = 0;
 #endif
 }
 
