@@ -7,7 +7,6 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
-
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/synch.h"
@@ -259,7 +258,7 @@ static int sys_write(int fd, const void* buffer, unsigned size)
 
     check_valid_buffer(buffer, size, true);
 
-    if (fd == STDIN_FILENO || fd == NULL) {
+    if (fd == STDIN_FILENO) {
         return SYSCALL_FAILURE;
     } else if (fd == STDOUT_FILENO) {
         putbuf((const char*)buffer, (size_t)size);
@@ -286,7 +285,7 @@ static void sys_seek(int fd, unsigned position)
 {
     struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
     if (fd_entry == NULL) {
-        return SYSCALL_FAILURE;
+        return;
     }
     struct file* file = fd_entry->file;
     lock_acquire(&file_lock);
@@ -309,7 +308,6 @@ static unsigned sys_tell(int fd)
 
 static void sys_close(int fd)
 {
-
     // open_file_list 에서 제거
     struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
     if (fd_entry == NULL) {
@@ -320,6 +318,8 @@ static void sys_close(int fd)
     lock_acquire(&file_lock);
     file_close(fd_entry->file);
     lock_release(&file_lock);
+
+    free(fd_entry);
 }
 
 // fd 인자로 받아 open_file_ilst_elem 리턴하는 함수
