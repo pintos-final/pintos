@@ -5,6 +5,9 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+
+#include "threads/synch.h"
+
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -108,6 +111,10 @@ struct thread {
     uint64_t* pml4;             /* Page map level 4 */
     int exit_code;              /* 종료 코드 */
     struct list open_file_list; /* open 파일 목록(fd 리스트) */
+
+    struct list child_list;             /* (부모) 자식 쓰레드 목록 */
+    struct lock fork_sema;              /* (부모) fork 할 때 자식이 로드되기 전까지 대기 */
+    struct child* child_struct_pointer; /* (자식) 부모가 가진 자식 구조체(child_list의 원소)의 포인터 */
 #endif
 #ifdef VM
     /* Table for whole virtual memory owned by thread. */
@@ -117,6 +124,15 @@ struct thread {
     /* Owned by thread.c. */
     struct intr_frame tf; /* Information for switching */
     unsigned magic;       /* Detects stack overflow. */
+};
+
+// 자식 구조체 : 자식 쓰레드와 별개로 자식의 정보를 저장. 부모는 리스트로 갖고있고, 자식은 구조체 포인터로 갖고있다
+struct child {
+    tid_t tid;       /* 자식 쓰레드 id */
+    int status_code; /* 자식 쓰레드의 상태코드 */
+    bool is_exited;  /* exit 여부 */
+    struct semaphore child_sema;
+    struct list_elem elem;
 };
 
 /* If false (default), use round-robin scheduler.
