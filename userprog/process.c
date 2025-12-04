@@ -28,6 +28,7 @@ static void process_cleanup(void);
 static bool load(const char* file_name, struct intr_frame* if_);
 static void initd(void* f_name);
 static void __do_fork(void*);
+static void close_exec_file(void);
 
 /* General process initializer for initd and other process. */
 static void process_init(void)
@@ -242,6 +243,18 @@ error:
     thread_exit();
 }
 
+/* exec_file을 닫고 쓰기 권한 복원 */
+static void close_exec_file(void)
+{
+    struct thread* curr = thread_current();
+    if (curr->exec_file != NULL) {
+        lock_acquire(&file_lock);
+        file_close(curr->exec_file); // 내부에서 file_allow_write() 호출됨
+        lock_release(&file_lock);
+        curr->exec_file = NULL;
+    }
+}
+
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
 int process_exec(void* f_name)
@@ -258,6 +271,7 @@ int process_exec(void* f_name)
     _if.eflags = FLAG_IF | FLAG_MBS;
 
     /* We first kill the current context */
+    close_exec_file();
     process_cleanup();
 
     /* And then load the binary */
@@ -322,13 +336,8 @@ void process_exit(void)
 {
     struct thread* curr = thread_current();
 
-    /* exec_file을 먼저 닫아서 쓰기 허용 */
-    if (curr->exec_file) {
-        lock_acquire(&file_lock);
-        file_close(curr->exec_file);
-        lock_release(&file_lock);
-        curr->exec_file = NULL;
-    }
+    /* 실행 중인 파일에 대한 쓰기 제한을 해제하고 닫음 */
+    close_exec_file();
 
     /* 유저 프로세스인 경우에만 종료 메시지 출력 */
     if (curr->pml4 != NULL) {
@@ -372,15 +381,6 @@ static void process_cleanup(void)
 #ifdef VM
     supplemental_page_table_kill(&curr->spt);
 #endif
-
-    /* 실행 중인 파일에 대한 쓰기 제한을 해제하고 닫음 */
-    if (curr->exec_file) {
-        lock_acquire(&file_lock);
-        file_close(curr->exec_file);
-        lock_release(&file_lock);
-        curr->exec_file = NULL;
-    }
-
     uint64_t* pml4;
     /* Destroy the current process's page directory and switch back
      * to the kernel-only page directory. */
