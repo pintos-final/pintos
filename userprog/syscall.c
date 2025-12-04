@@ -65,12 +65,6 @@ static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
 static void check_writable_pointer(void* uaddr);
 static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
 
-struct open_file_list_elem {
-    int fd;
-    struct file* file;
-    struct list_elem elem;
-};
-
 struct lock file_lock;
 
 void syscall_init(void)
@@ -98,11 +92,14 @@ void syscall_handler(struct intr_frame* f)
         break;
 
     case SYS_FORK:
+        thread_current()->fork_if = *f;
+        f->R.rax = sys_fork((const char*)f->R.rdi);
         break;
     case SYS_EXEC:
         f->R.rax = sys_exec((const char*)f->R.rdi);
         break;
     case SYS_WAIT:
+        f->R.rax = sys_wait((pid_t)f->R.rdi);
         break;
     case SYS_CREATE:
         f->R.rax = sys_create((const char*)f->R.rdi, (unsigned int)f->R.rsi);
@@ -156,6 +153,7 @@ void sys_exit(int status)
 
 pid_t sys_fork(const char* thread_name)
 {
+    return process_fork(thread_name, &thread_current()->fork_if);
 }
 
 int sys_exec(const char* cmd_line)
