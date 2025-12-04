@@ -426,6 +426,7 @@ static void init_thread(struct thread* t, const char* name, int priority)
     list_init(&t->donations);
 #ifdef USERPROG
     list_init(&t->open_file_list);
+    list_init(&t->child_list);
 #endif
 }
 
