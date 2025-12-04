@@ -296,7 +296,7 @@ int process_exec(void* f_name)
  *
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
-int process_wait(tid_t child_tid UNUSED)
+int process_wait(tid_t child_tid)
 {
     struct thread* curr = thread_current();
     struct thread* child = NULL;
