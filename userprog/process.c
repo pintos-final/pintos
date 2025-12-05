@@ -7,6 +7,7 @@
 #include <string.h>
 #include "userprog/gdt.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
@@ -17,6 +18,7 @@
 #include "threads/thread.h"
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
+#include "threads/synch.h"
 #include "intrinsic.h"
 #ifdef VM
 #include "vm/vm.h"
@@ -26,6 +28,7 @@ static void process_cleanup(void);
 static bool load(const char* file_name, struct intr_frame* if_);
 static void initd(void* f_name);
 static void __do_fork(void*);
+static void close_exec_file(void);
 
 /* General process initializer for initd and other process. */
 static void process_init(void)
@@ -90,10 +93,36 @@ static void initd(void* f_name)
 
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
-tid_t process_fork(const char* name, struct intr_frame* if_ UNUSED)
+tid_t process_fork(const char* name, struct intr_frame* if_)
 {
-    /* Clone current thread to new thread.*/
-    return thread_create(name, PRI_DEFAULT, __do_fork, thread_current());
+    struct thread* curr = thread_current();
+
+    /* 부모의 인터럽트 프레임을 저장 (자식이 복사할 수 있도록) */
+    memcpy(&curr->parent_if, if_, sizeof(struct intr_frame));
+
+    tid_t tid = thread_create(name, PRI_DEFAULT, __do_fork, thread_current());
+    if (tid == TID_ERROR)
+        return TID_ERROR;
+
+    /* 자식이 fork를 완료할 때까지 대기 */
+    sema_down(&curr->fork_sema);
+
+    /* 자식 스레드 찾기 */
+    struct thread* child = NULL;
+    struct list_elem* e;
+    for (e = list_begin(&curr->child_list); e != list_end(&curr->child_list); e = list_next(e)) {
+        struct thread* t = list_entry(e, struct thread, child_elem);
+        if (t->tid == tid) {
+            child = t;
+            break;
+        }
+    }
+
+    /* fork 실패 시 (자식이 에러로 종료한 경우) */
+    if (child == NULL || child->exit_code == -1)
+        return TID_ERROR;
+
+    return tid;
 }
 
 #ifndef VM
@@ -107,22 +136,31 @@ static bool duplicate_pte(uint64_t* pte, void* va, void* aux)
     void* newpage;
     bool writable;
 
-    /* 1. TODO: If the parent_page is kernel page, then return immediately. */
+    /* 1. If the parent_page is kernel page, then return immediately. */
+    if (is_kernel_vaddr(va))
+        return true;
 
     /* 2. Resolve VA from the parent's page map level 4. */
     parent_page = pml4_get_page(parent->pml4, va);
+    if (parent_page == NULL)
+        return false;
 
-    /* 3. TODO: Allocate new PAL_USER page for the child and set result to
-     *    TODO: NEWPAGE. */
+    /* 3. Allocate new PAL_USER page for the child and set result to NEWPAGE. */
+    newpage = palloc_get_page(PAL_USER);
+    if (newpage == NULL)
+        return false;
 
-    /* 4. TODO: Duplicate parent's page to the new page and
-     *    TODO: check whether parent's page is writable or not (set WRITABLE
-     *    TODO: according to the result). */
+    /* 4. Duplicate parent's page to the new page and
+     *    check whether parent's page is writable or not (set WRITABLE according to the result). */
+    memcpy(newpage, parent_page, PGSIZE);
+    writable = is_writable(pte);
 
     /* 5. Add new page to child's page table at address VA with WRITABLE
      *    permission. */
     if (!pml4_set_page(current->pml4, va, newpage, writable)) {
-        /* 6. TODO: if fail to insert page, do error handling. */
+        /* 6. if fail to insert page, do error handling. */
+        palloc_free_page(newpage);
+        return false;
     }
     return true;
 }
@@ -137,9 +175,7 @@ static void __do_fork(void* aux)
     struct intr_frame if_;
     struct thread* parent = (struct thread*)aux;
     struct thread* current = thread_current();
-    /* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-    struct intr_frame* parent_if;
-    bool succ = true;
+    struct intr_frame* parent_if = &parent->parent_if;
 
     /* 1. Read the cpu context to local stack. */
     memcpy(&if_, parent_if, sizeof(struct intr_frame));
@@ -158,20 +194,65 @@ static void __do_fork(void* aux)
     if (!pml4_for_each(parent->pml4, duplicate_pte, parent))
         goto error;
 #endif
+    /* 자식의 fork 반환값은 0 */
+    if_.R.rax = 0;
 
-    /* TODO: Your code goes here.
-     * TODO: Hint) To duplicate the file object, use `file_duplicate`
-     * TODO:       in include/filesys/file.h. Note that parent should not return
-     * TODO:       from the fork() until this function successfully duplicates
-     * TODO:       the resources of parent.*/
+    lock_acquire(&file_lock);
+    /* exec_file 복제 */
+    if (parent->exec_file != NULL) {
+        current->exec_file = file_duplicate(parent->exec_file);
+        if (current->exec_file == NULL) {
+            lock_release(&file_lock);
+            goto error;
+        }
+        file_deny_write(current->exec_file);
+    }
 
-    process_init();
+    /* fd_table 복제 */
+    struct list_elem* e;
+    for (e = list_begin(&parent->open_file_list); e != list_end(&parent->open_file_list); e = list_next(e)) {
+        struct open_file_list_elem* parent_entry = list_entry(e, struct open_file_list_elem, elem);
+
+        struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
+        if (fd_entry == NULL) {
+            lock_release(&file_lock);
+            goto error;
+        }
+
+        fd_entry->file = file_duplicate(parent_entry->file);
+        if (fd_entry->file == NULL) {
+            free(fd_entry);
+            lock_release(&file_lock);
+            goto error;
+        }
+
+        fd_entry->fd = parent_entry->fd;
+        list_push_back(&current->open_file_list, &fd_entry->elem);
+    }
+    lock_release(&file_lock);
 
     /* Finally, switch to the newly created process. */
-    if (succ)
-        do_iret(&if_);
+    process_init();
+    sema_up(&parent->fork_sema); /* 부모에게 fork 완료 알림 */
+    do_iret(&if_);
+
 error:
+    /* 실패 표시만 하고 부모를 깨움. 정리는 thread_exit에서 */
+    current->exit_code = -1;
+    sema_up(&parent->fork_sema);
     thread_exit();
+}
+
+/* exec_file을 닫고 쓰기 권한 복원 */
+static void close_exec_file(void)
+{
+    struct thread* curr = thread_current();
+    if (curr->exec_file != NULL) {
+        lock_acquire(&file_lock);
+        file_close(curr->exec_file); // 내부에서 file_allow_write() 호출됨
+        lock_release(&file_lock);
+        curr->exec_file = NULL;
+    }
 }
 
 /* Switch the current execution context to the f_name.
@@ -190,6 +271,7 @@ int process_exec(void* f_name)
     _if.eflags = FLAG_IF | FLAG_MBS;
 
     /* We first kill the current context */
+    close_exec_file();
     process_cleanup();
 
     /* And then load the binary */
@@ -214,26 +296,78 @@ int process_exec(void* f_name)
  *
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
-int process_wait(tid_t child_tid UNUSED)
+int process_wait(tid_t child_tid)
 {
-    /* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
-     * XXX:       to add infinite loop here before
-     * XXX:       implementing the process_wait. */
-    return -1;
+    struct thread* curr = thread_current();
+    struct thread* child = NULL;
+    struct list_elem* e;
+
+    /* 1. 자식 리스트에서 child_tid에 해당하는 스레드 찾기 */
+    for (e = list_begin(&curr->child_list); e != list_end(&curr->child_list); e = list_next(e)) {
+        struct thread* t = list_entry(e, struct thread, child_elem);
+        if (t->tid == child_tid) {
+            child = t;
+            break;
+        }
+    }
+
+    /* 자식이 아니거나 이미 없는 경우 -1 리턴 */
+    if (child == NULL) {
+        return -1;
+    }
+
+    /* 2. 자식이 종료될 때까지 대기 (Blocking) 자식이 process_exit에서 sema_up(&wait_sema) 할 때까지 멈춤 */
+    sema_down(&child->wait_sema);
+
+    /* 3. 자식의 종료 상태 가져오기 */
+    int exit_code = child->exit_code;
+
+    /* 4. 자식 리스트에서 제거 */
+    list_remove(&child->child_elem);
+
+    /* 5. 자식 스레드가 완전히 소멸되도록 허용, 자식은 process_exit 마지막에서 free_sema를 기다리고 있음 */
+    sema_up(&child->free_sema);
+
+    return exit_code;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void process_exit(void)
 {
     struct thread* curr = thread_current();
-    /* TODO: Your code goes here.
-     * TODO: Implement process termination message (see
-     * TODO: project2/process_termination.html).
-     * TODO: We recommend you to implement process resource cleanup here. */
 
-    // process termination message
+    /* 실행 중인 파일에 대한 쓰기 제한을 해제하고 닫음 */
+    close_exec_file();
+
+    /* 유저 프로세스인 경우에만 종료 메시지 출력 */
     if (curr->pml4 != NULL) {
         printf("%s: exit(%d)\n", curr->name, curr->exit_code);
+    }
+
+    /* 파일 디스크립터 테이블의 모든 열린 파일을 닫음 */
+    lock_acquire(&file_lock);
+    while (!list_empty(&curr->open_file_list)) {
+        struct list_elem* e = list_pop_front(&curr->open_file_list);
+        struct open_file_list_elem* entry = list_entry(e, struct open_file_list_elem, elem);
+        file_close(entry->file);
+        free(entry);
+    }
+    lock_release(&file_lock);
+
+    /* 모든 자식 프로세스를 고아로 만듦 */
+    while (!list_empty(&curr->child_list)) {
+        struct list_elem* e = list_pop_front(&curr->child_list);
+        struct thread* child = list_entry(e, struct thread, child_elem);
+        child->parent = NULL;
+        sema_up(&child->free_sema);
+    }
+
+    /* 부모가 기다리고 있다면 깨워줌 */
+    sema_up(&curr->wait_sema);
+
+    /* 부모가 있는 경우에만 대기 */
+    if (curr->parent != NULL) {
+        sema_down(&curr->free_sema);
     }
 
     process_cleanup();
@@ -247,7 +381,6 @@ static void process_cleanup(void)
 #ifdef VM
     supplemental_page_table_kill(&curr->spt);
 #endif
-
     uint64_t* pml4;
     /* Destroy the current process's page directory and switch back
      * to the kernel-only page directory. */
@@ -439,13 +572,22 @@ static bool load(const char* file_name, struct intr_frame* if_)
     success = true;
 
 done:
-    /* We arrive here whether the load is successful or not. */
+    /* 메모리 해제 */
     if (fn_copy != NULL)
         palloc_free_page(fn_copy);
     if (argv != NULL)
         palloc_free_page(argv);
 
-    file_close(file);
+    /* 파일 처리 */
+    lock_acquire(&file_lock);
+    if (success) {
+        t->exec_file = file;
+        file_deny_write(file);
+    } else if (file != NULL) {
+        file_close(file);
+    }
+    lock_release(&file_lock);
+
     return success;
 }
 

@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -15,6 +16,13 @@ enum thread_status {
     THREAD_READY,   /* Not running but ready to run. */
     THREAD_BLOCKED, /* Waiting for an event to trigger. */
     THREAD_DYING    /* About to be destroyed. */
+};
+
+/* File descriptor entry */
+struct open_file_list_elem {
+    int fd;
+    struct file* file;
+    struct list_elem elem;
 };
 
 /* Thread identifier type.
@@ -105,9 +113,18 @@ struct thread {
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
-    uint64_t* pml4;             /* Page map level 4 */
-    int exit_code;              /* 종료 코드 */
-    struct list open_file_list; /* open 파일 목록(fd 리스트) */
+    uint64_t* pml4;              /* Page map level 4 */
+    int exit_code;               /* 종료 코드 */
+    struct list open_file_list;  /* open 파일 목록(fd 리스트) */
+    struct file* exec_file;      /* 현재 실행 중인 프로세스의 실행 파일 */
+    struct thread* parent;       /* 부모 프로세스 */
+    struct intr_frame parent_if; /* Fork 구현을 위해 부모의 인터럽트 프레임을 저장할 필드 추가 추천 */
+    struct semaphore wait_sema;  /* 자식이 종료될 때까지 부모가 기다리는 세마포어 */
+    struct semaphore fork_sema;  /* fork가 완료될 때까지 부모가 기다리는 세마포어 (선택 사항, fork 구현 시 필요) */
+    struct semaphore free_sema;  /* 자식의 struct thread가 해제될 때까지 자식이 기다리는 세마포어 */
+    struct list_elem child_elem; /* 부모의 자식 리스트에 연결하기 위한 리스트 원소 */
+    struct list child_list;      /* 자식 프로세스들을 관리하는 리스트 */
+
 #endif
 #ifdef VM
     /* Table for whole virtual memory owned by thread. */

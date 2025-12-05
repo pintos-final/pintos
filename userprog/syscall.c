@@ -5,12 +5,15 @@
 #include "threads/thread.h"
 #include "threads/loader.h"
 #include "userprog/gdt.h"
+#include "userprog/process.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
-
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/synch.h"
+#include "threads/palloc.h"
+
+typedef int pid_t;
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame*);
@@ -38,6 +41,9 @@ void syscall_handler(struct intr_frame*);
 // syscall 함수 ========
 static void sys_halt(void);
 static void sys_exit(int status);
+pid_t sys_fork(const char* thread_name);
+int sys_exec(const char* file);
+int sys_wait(pid_t pid);
 static bool sys_create(const char* file, unsigned initial_size);
 static bool sys_remove(const char* file);
 static int sys_open(const char* file);
@@ -55,12 +61,6 @@ static void check_valid_string(const char* str);
 static void check_valid_buffer(const void* uaddr, size_t size, bool check_write);
 static void check_writable_pointer(void* uaddr);
 static bool fd_less(const struct list_elem* a, const struct list_elem* b, void* aux UNUSED);
-
-struct open_file_list_elem {
-    int fd;
-    struct file* file;
-    struct list_elem elem;
-};
 
 struct lock file_lock;
 
@@ -86,6 +86,19 @@ void syscall_handler(struct intr_frame* f)
 
     case SYS_EXIT:
         sys_exit((int)f->R.rdi);
+        break;
+
+    case SYS_FORK:
+        memcpy(&thread_current()->parent_if, f, sizeof(struct intr_frame));
+        f->R.rax = sys_fork((const char*)f->R.rdi);
+        break;
+
+    case SYS_EXEC:
+        f->R.rax = sys_exec((const char*)f->R.rdi);
+        break;
+
+    case SYS_WAIT:
+        f->R.rax = sys_wait((pid_t)f->R.rdi);
         break;
 
     case SYS_CREATE:
@@ -138,6 +151,33 @@ void sys_exit(int status)
     thread_exit();
 }
 
+pid_t sys_fork(const char* thread_name)
+{
+    check_valid_string(thread_name);
+    return process_fork(thread_name, &thread_current()->parent_if);
+}
+
+int sys_exec(const char* file)
+{
+    check_valid_string(file);
+
+    char* file_copy = palloc_get_page(PAL_ZERO);
+    if (file_copy == NULL)
+        sys_exit(EXIT_FAILURE);
+
+    strlcpy(file_copy, file, PGSIZE);
+
+    if (process_exec(file_copy) == SYSCALL_FAILURE)
+        sys_exit(EXIT_FAILURE);
+
+    NOT_REACHED();
+}
+
+int sys_wait(pid_t pid)
+{
+    return process_wait((tid_t)pid);
+}
+
 static bool sys_create(const char* file, unsigned initial_size)
 {
     check_valid_string(file);
@@ -172,6 +212,13 @@ static int sys_open(const char* file)
     struct thread* curr = thread_current();
 
     struct open_file_list_elem* fd_entry = malloc(sizeof *fd_entry);
+    if (fd_entry == NULL) {
+        lock_acquire(&file_lock);
+        file_close(open_file);
+        lock_release(&file_lock);
+        return SYSCALL_FAILURE;
+    }
+
     fd_entry->file = open_file;
 
     // fd list 순회하며 비어있는 부분 체크해 fd값 부여
@@ -265,7 +312,7 @@ static int sys_write(int fd, const void* buffer, unsigned size)
 
     check_valid_buffer(buffer, size, true);
 
-    if (fd == STDIN_FILENO || fd == NULL) {
+    if (fd == STDIN_FILENO) {
         return SYSCALL_FAILURE;
     } else if (fd == STDOUT_FILENO) {
         putbuf((const char*)buffer, (size_t)size);
@@ -292,7 +339,7 @@ static void sys_seek(int fd, unsigned position)
 {
     struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
     if (fd_entry == NULL) {
-        return SYSCALL_FAILURE;
+        return;
     }
     struct file* file = fd_entry->file;
     lock_acquire(&file_lock);
@@ -315,7 +362,6 @@ static unsigned sys_tell(int fd)
 
 static void sys_close(int fd)
 {
-
     // open_file_list 에서 제거
     struct open_file_list_elem* fd_entry = get_list_elem_from_fd(fd);
     if (fd_entry == NULL) {
@@ -326,6 +372,8 @@ static void sys_close(int fd)
     lock_acquire(&file_lock);
     file_close(fd_entry->file);
     lock_release(&file_lock);
+
+    free(fd_entry);
 }
 
 // fd 인자로 받아 open_file_ilst_elem 리턴하는 함수
