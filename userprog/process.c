@@ -139,8 +139,6 @@ tid_t process_fork(const char* name, struct intr_frame* if_)
     fork_args->parent = thread_current();
     fork_args->child = child;
 
-    sema_init(&thread_current()->fork_sema, 0);
-
     tid_t result_tid = thread_create(name, PRI_DEFAULT, __do_fork, fork_args);
     child->tid = result_tid;
     sema_down(&thread_current()->fork_sema);
@@ -182,6 +180,7 @@ static bool duplicate_pte(uint64_t* pte, void* va, void* aux)
     /* 5.자식의 페이지 테이블에 VA 위치에 새 페이지를 WRITABLE 권한과 함께 매핑 */
     if (!pml4_set_page(current->pml4, va, newpage, writable)) {
         /* 6. 페이지 삽입 실패시 false로 작업 중단 */
+        palloc_free_page(newpage);
         return false;
     }
     return true;
