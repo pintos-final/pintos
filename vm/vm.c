@@ -1,6 +1,7 @@
 /* vm.c: Generic interface for virtual memory objects. */
 
 #include "threads/malloc.h"
+#include "threads/mmu.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
 
@@ -146,11 +147,18 @@ static struct frame* vm_evict_frame(void)
  * space.*/
 static struct frame* vm_get_frame(void)
 {
-    struct frame* frame = NULL;
-    /* TODO: Fill this function. */
-
+    struct frame* frame = malloc(sizeof(struct frame));
     ASSERT(frame != NULL);
-    ASSERT(frame->page == NULL);
+
+    frame->kva = palloc_get_page(PAL_USER);
+    // 페이지 할당 실패 시 처리 (eviction은 추후 구현)
+    if (frame->kva == NULL) {
+        free(frame); // 할당한 frame 메모리 해제
+        PANIC("todo");
+    }
+
+    frame->page = NULL;
+
     return frame;
 }
 
@@ -185,12 +193,10 @@ void vm_dealloc_page(struct page* page)
 }
 
 /* Claim the page that allocate on VA. */
-bool vm_claim_page(void* va UNUSED)
+bool vm_claim_page(void* va)
 {
-    struct page* page = NULL;
-    /* TODO: Fill this function */
-
-    return vm_do_claim_page(page);
+    struct page* page = spt_find_page(&thread_current()->spt, va);
+    return page != NULL ? vm_do_claim_page(page) : false;
 }
 
 /* Claim the PAGE and set up the mmu. */
@@ -202,7 +208,14 @@ static bool vm_do_claim_page(struct page* page)
     frame->page = page;
     page->frame = frame;
 
-    /* TODO: Insert page table entry to map page's VA to frame's PA. */
+    if (!pml4_set_page(thread_current()->pml4, page->va, frame->kva, page->writable)) {
+        // 매핑 실패 시 할당한 프레임 정리
+        frame->page = NULL;
+        page->frame = NULL;
+        palloc_free_page(frame->kva);
+        free(frame);
+        return false;
+    }
 
     return swap_in(page, frame->kva);
 }
