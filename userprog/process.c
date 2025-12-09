@@ -30,13 +30,6 @@ static void initd(void* f_name);
 static void __do_fork(void*);
 static void close_exec_file(void);
 
-struct lazy_load_arg {
-    struct file* file;
-    off_t ofs;
-    uint32_t read_bytes;
-    uint32_t zero_bytes;
-};
-
 /* General process initializer for initd and other process. */
 static void process_init(void)
 {
