@@ -396,9 +396,13 @@ static struct open_file_list_elem* get_list_elem_from_fd(int fd)
 
 static void check_valid_addr(void* addr)
 {
-    if (addr == NULL || !is_user_vaddr(addr) || pml4_get_page(thread_current()->pml4, addr) == NULL) {
+    if (addr == NULL || !is_user_vaddr(addr))
         sys_exit(EXIT_FAILURE);
-    }
+
+    /* pml4 대신 SPT에서 확인 */
+    struct page* page = spt_find_page(&thread_current()->spt, addr);
+    if (page == NULL)
+        sys_exit(EXIT_FAILURE);
 }
 
 static void check_valid_string(const char* str)
@@ -450,8 +454,8 @@ static void check_valid_buffer(const void* uaddr, size_t size, bool check_write)
 
 static void check_writable_pointer(void* uaddr)
 {
-    uint64_t* pte = pml4e_walk(thread_current()->pml4, (uint64_t)uaddr, false);
-    if (pte == NULL || !is_writable(pte))
+    struct page* page = spt_find_page(&thread_current()->spt, uaddr);
+    if (page == NULL || !page->writable)
         sys_exit(EXIT_FAILURE);
 }
 
