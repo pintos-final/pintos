@@ -267,7 +267,7 @@ bool supplemental_page_table_copy(struct supplemental_page_table* dst, struct su
             struct lazy_load_arg* new_aux = malloc(sizeof(struct lazy_load_arg));
             memcpy(new_aux, src_page->uninit.aux, sizeof(struct lazy_load_arg));
 
-            if (!vm_alloc_page_with_initializer(VM_TYPE(src_page->uninit.type), upage, writable, init, aux))
+            if (!vm_alloc_page_with_initializer(VM_TYPE(src_page->uninit.type), upage, writable, init, new_aux))
                 return false;
         }
         /* 2. 이미 초기화된 페이지인 경우 (ANON 또는 FILE) */
